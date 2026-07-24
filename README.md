@@ -4,7 +4,7 @@
 
 Tiled adapter for the DCC Model Context Protocol ecosystem.
 
-![Tiled game-level workflow](docs/images/dcc-mcp-tiled-showcase.gif)
+![Tiled game-level workflow](docs/images/dcc-mcp-tiled-showcase.webp)
 
 The adapter uses a process-isolated loopback JSON-lines bridge contract for map
 and object automation. It does not expose arbitrary source evaluation.
