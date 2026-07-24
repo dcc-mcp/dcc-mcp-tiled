@@ -2,4 +2,4 @@
 
 ## 0.1.0
 
-- Initial GIMP 3 session bridge and MCP adapter.
+- Initial Tiled session bridge and MCP adapter.

@@ -1,36 +1,39 @@
-# dcc-mcp-gimp
+# dcc-mcp-tiled
 
-GIMP 3 adapter for the DCC Model Context Protocol ecosystem.
+![DCC-MCP Tiled](docs/images/dcc-mcp-tiled.svg)
 
-The adapter uses a small GIMP 3 Python plug-in and a loopback JSON-lines bridge.
-The MCP server runs in the normal Python environment; GIMP API calls stay inside
-the plug-in process. It does not expose arbitrary Python or Script-Fu execution.
+Tiled adapter for the DCC Model Context Protocol ecosystem.
+
+![Tiled game-level workflow](docs/images/dcc-mcp-tiled-showcase.gif)
+
+The adapter uses a process-isolated loopback JSON-lines bridge contract for map
+and object automation. It does not expose arbitrary source evaluation.
 
 ## Install
 
 ```bash
-pip install dcc-mcp-gimp
-dcc-mcp-gimp-install
+pip install dcc-mcp-tiled
+dcc-mcp-tiled-install
 ```
 
-Restart GIMP, run **Filters → Development → DCC-MCP GIMP Bridge**, then start:
+Configure the Tiled bridge endpoint, then start:
 
 ```bash
-dcc-mcp-gimp
+dcc-mcp-tiled
 ```
 
 The MCP endpoint defaults to `http://127.0.0.1:8767/mcp`; the plug-in bridge uses
-`127.0.0.1:3848`. Override the latter with `DCC_MCP_GIMP_BRIDGE_PORT` before
+`127.0.0.1:3848`. Override the latter with `DCC_MCP_TILED_BRIDGE_PORT` before
 starting both processes.
 
 ## Current tools
 
-- Check GIMP bridge status and version.
+- Check TILED bridge status and version.
 - List open images with dimensions.
 - Inspect the active image.
 
 The first release targets safe session discovery. Image mutation and export will
-be added only through typed GIMP procedures, not arbitrary source evaluation.
+be added only through typed TILED procedures, not arbitrary source evaluation.
 
 ## Development
 
@@ -43,4 +46,4 @@ python -m build
 python -m twine check dist/*
 ```
 
-GIMP 3 plug-in API reference: https://developer.gimp.org/api/3.0/
+Tiled plug-in API reference: https://developer.tiled.org/api/3.0/
