@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Replace the placeholder bridge with typed map, object, tileset, tile-painting,
+  validation, inspection, and conversion workflows backed by Tiled's official
+  command-line scripting API.
+- Add a standalone DCC-MCP server with one bundled `tiled-maps` Skill and ten
+  typed tools.
+
+### Security
+
+- Enforce allowed filesystem roots, bounded inputs and outputs, subprocess
+  cancellation and deadlines, overwrite opt-in, and atomic output replacement.
+- Keep the bundled JavaScript driver fixed; callers cannot submit source code.
+
+### Testing
+
+- Add unit, Skill-schema, packaging, Python 3.9/3.12, and pinned Tiled 1.12.2
+  native end-to-end release gates.
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.1.0...v0.2.0) (2026-07-24)
 
 

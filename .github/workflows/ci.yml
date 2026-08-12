@@ -4,14 +4,54 @@ on:
   pull_request:
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
+        with: {python-version: "${{ matrix.python-version }}"}
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
       - run: python -m ruff check src tests tools
+      - run: python -m ruff format --check src tests tools
       - run: python tools/lint_skills.py
-      - run: python -m py_compile bridge/tiled-plugin/dcc_mcp_tiled.py
-      - run: python -m build && python -m twine check dist/*
+      - run: python -m build
+      - if: matrix.python-version == '3.12'
+        run: python -m twine check dist/*
+
+  tiled-live:
+    runs-on: ubuntu-latest
+    env:
+      TILED_VERSION: "1.12.2"
+      TILED_SHA256: "5e0edbff61314f41af3c72c21ec006b363cf12047cc9cfb5bbd63a98bca3721c"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install adapter
+        run: python -m pip install -e ".[dev]"
+      - name: Download verified official Tiled AppImage
+        run: |
+          curl --fail --location --output tiled.AppImage \
+            "https://github.com/mapeditor/tiled/releases/download/v${TILED_VERSION}/Tiled-${TILED_VERSION}_Linux_x86_64.AppImage"
+          echo "${TILED_SHA256}  tiled.AppImage" | sha256sum --check --strict
+          chmod +x tiled.AppImage
+      - name: Install AppImage and virtual display runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libglib2.0-0 libx11-6 libxcb1 libxkbcommon-x11-0 libgl1 libegl1 \
+            libfontconfig1 libxcb-cursor0 xvfb xauth
+      - name: Run native Tiled typed smoke
+        env:
+          DCC_MCP_TILED_EXECUTABLE: "${{ github.workspace }}/tiled.AppImage"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          sleep 1
+          DISPLAY=:99 python tests/live_tiled_smoke.py

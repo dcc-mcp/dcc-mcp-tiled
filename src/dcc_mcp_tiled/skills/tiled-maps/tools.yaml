@@ -1,0 +1,314 @@
+tools:
+  - name: get_status
+    description: Verify the Tiled executable, native scripting API, formats, workspace roots, and safety limits.
+    source_file: scripts/get_status.py
+    input_schema: {type: object, properties: {}, additionalProperties: false}
+    output_schema: {type: object}
+    execution: sync
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 30
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false, deferred_hint: false}
+
+  - name: inspect_map
+    description: Read a TMX/TMJ map through Tiled and return bounded map, layer, object, tileset, property, and tile-occupancy metadata.
+    source_file: scripts/inspect_map.py
+    input_schema:
+      type: object
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1, description: "TMX, TMJ, or legacy JSON map under the configured roots."}
+        include_objects: {type: boolean, default: true}
+        max_objects: {type: integer, minimum: 0, maximum: 2000, default: 1000}
+        max_tiles_to_scan: {type: integer, minimum: 0, maximum: 4000000, default: 250000}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments: {path: "maps/level01.tmj", include_objects: true, max_objects: 1000}
+        note: Inspect a level before editing or handing it to an engine.
+    next-tools:
+      on-failure: [get_status]
+
+  - name: validate_map
+    description: Parse a TMX/TMJ map with Tiled's native reader and return a structured validity summary.
+    source_file: scripts/validate_map.py
+    input_schema:
+      type: object
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: true, destructive_hint: false, idempotent_hint: true, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments: {path: "maps/level01.tmj"}
+        note: Validate a map with the installed Tiled readers.
+    next-tools:
+      on-failure: [get_status, inspect_map]
+
+  - name: create_map
+    description: Create a finite Tiled map with bounded dimensions, tile size, orientation, initial layers, and scalar custom properties.
+    source_file: scripts/create_map.py
+    input_schema:
+      type: object
+      required: [output_path, width, height]
+      properties:
+        output_path: {type: string, minLength: 1}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        tile_width: {type: integer, minimum: 1, maximum: 8192, default: 32}
+        tile_height: {type: integer, minimum: 1, maximum: 8192, default: 32}
+        orientation: {type: string, enum: [orthogonal, isometric, staggered, hexagonal], default: orthogonal}
+        layers:
+          type: array
+          maxItems: 256
+          items:
+            type: object
+            required: [type, name]
+            properties:
+              type: {type: string, enum: [tile, object, group]}
+              name: {type: string, minLength: 1, maxLength: 512}
+              properties: {type: object, maxProperties: 128}
+            additionalProperties: false
+        properties: {type: object, maxProperties: 128}
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments:
+          output_path: "maps/level01.tmj"
+          width: 64
+          height: 36
+          tile_width: 32
+          tile_height: 32
+          layers: [{type: tile, name: Ground}, {type: object, name: Gameplay}]
+        note: Create an orthogonal level with tile and gameplay-object layers.
+    next-tools:
+      on-failure: [get_status]
+
+  - name: add_object_layer
+    description: Add one uniquely named object layer to a map and write the result atomically to a TMX/TMJ output.
+    source_file: scripts/add_object_layer.py
+    input_schema:
+      type: object
+      required: [source_path, output_path, layer_name]
+      properties:
+        source_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        layer_name: {type: string, minLength: 1, maxLength: 512}
+        properties: {type: object, maxProperties: 128}
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    next-tools:
+      on-failure: [inspect_map, validate_map]
+
+  - name: write_objects
+    description: Append to or replace one object layer with bounded rectangle, ellipse, point, polygon, or polyline objects and scalar properties.
+    source_file: scripts/write_objects.py
+    input_schema:
+      type: object
+      required: [source_path, output_path, layer_name, objects]
+      properties:
+        source_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        layer_name: {type: string, minLength: 1, maxLength: 512}
+        mode: {type: string, enum: [append, replace_layer], default: append}
+        objects:
+          type: array
+          minItems: 1
+          maxItems: 2000
+          items:
+            type: object
+            properties:
+              name: {type: string, maxLength: 512}
+              class_name: {type: string, maxLength: 512}
+              shape: {type: string, enum: [rectangle, ellipse, point, polygon, polyline], default: rectangle}
+              x: {type: number, default: 0}
+              y: {type: number, default: 0}
+              width: {type: number, default: 0}
+              height: {type: number, default: 0}
+              rotation: {type: number, default: 0}
+              visible: {type: boolean, default: true}
+              points:
+                type: array
+                maxItems: 4096
+                items:
+                  type: object
+                  required: [x, y]
+                  properties: {x: {type: number}, y: {type: number}}
+                  additionalProperties: false
+              properties: {type: object, maxProperties: 128}
+            additionalProperties: false
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments:
+          source_path: "maps/level01.tmj"
+          output_path: "maps/level01-gameplay.tmj"
+          layer_name: Gameplay
+          objects: [{name: PlayerSpawn, class_name: SpawnPoint, shape: point, x: 320, y: 256, properties: {team: player}}]
+        note: Add a typed player spawn marker without replacing the source map.
+    next-tools:
+      on-failure: [inspect_map, validate_map]
+
+  - name: add_tileset
+    description: Add an external TSX/TSJ tileset reference to a map and write the result atomically.
+    source_file: scripts/add_tileset.py
+    input_schema:
+      type: object
+      required: [source_path, tileset_path, output_path]
+      properties:
+        source_path: {type: string, minLength: 1}
+        tileset_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    next-tools:
+      on-failure: [inspect_map, validate_map]
+
+  - name: create_tileset
+    description: Create a TSX/TSJ image tileset through Tiled's native TilesetFormat API with bounded tile geometry and scalar properties.
+    source_file: scripts/create_tileset.py
+    input_schema:
+      type: object
+      required: [image_path, output_path, name, tile_width, tile_height]
+      properties:
+        image_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        name: {type: string, minLength: 1, maxLength: 512}
+        tile_width: {type: integer, minimum: 1, maximum: 8192}
+        tile_height: {type: integer, minimum: 1, maximum: 8192}
+        spacing: {type: integer, minimum: 0, maximum: 8192, default: 0}
+        margin: {type: integer, minimum: 0, maximum: 8192, default: 0}
+        properties: {type: object, maxProperties: 128}
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 120}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments: {image_path: "tiles/terrain.png", output_path: "tiles/terrain.tsj", name: Terrain, tile_width: 32, tile_height: 32}
+        note: Slice a grid image into a reusable external JSON tileset.
+    next-tools:
+      on-failure: [get_status]
+
+  - name: paint_tiles
+    description: Apply a bounded set of tile placements or erasures to one uniquely named tile layer using referenced tilesets.
+    source_file: scripts/paint_tiles.py
+    input_schema:
+      type: object
+      required: [source_path, output_path, layer_name, cells]
+      properties:
+        source_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        layer_name: {type: string, minLength: 1, maxLength: 512}
+        default_tileset_index: {type: integer, minimum: 0, default: 0}
+        cells:
+          type: array
+          minItems: 1
+          maxItems: 100000
+          items:
+            type: object
+            required: [x, y]
+            properties:
+              x: {type: integer, minimum: 0}
+              y: {type: integer, minimum: 0}
+              tile_id: {type: [integer, "null"], minimum: 0}
+              tileset_index: {type: integer, minimum: 0}
+              flip_horizontal: {type: boolean, default: false}
+              flip_vertical: {type: boolean, default: false}
+              flip_diagonal: {type: boolean, default: false}
+            additionalProperties: false
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 180}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments:
+          source_path: "maps/level01-with-tileset.tmj"
+          output_path: "maps/level01-painted.tmj"
+          layer_name: Ground
+          cells: [{x: 0, y: 0, tile_id: 0}, {x: 1, y: 0, tile_id: 0, flip_horizontal: true}]
+        note: Paint two cells with tile 0 from the first referenced tileset.
+    next-tools:
+      on-failure: [inspect_map, validate_map]
+
+  - name: convert_map
+    description: Convert TMX, TMJ, or legacy JSON maps through Tiled's native readers and writers.
+    source_file: scripts/convert_map.py
+    input_schema:
+      type: object
+      required: [source_path, output_path]
+      properties:
+        source_path: {type: string, minLength: 1}
+        output_path: {type: string, minLength: 1}
+        overwrite: {type: boolean, default: false}
+        timeout_secs: {type: number, minimum: 1, maximum: 600, default: 180}
+      additionalProperties: false
+    output_schema: {type: object}
+    execution: async
+    job_strategy: monolithic
+    affinity: any
+    enforce_thread_affinity: true
+    timeout_hint_secs: 600
+    annotations: {read_only_hint: false, destructive_hint: true, idempotent_hint: false, open_world_hint: false, deferred_hint: true}
+    call_examples:
+      - arguments: {source_path: "maps/level01.tmj", output_path: "exports/level01.tmx"}
+        note: Convert a JSON map to TMX for another engine or toolchain.
+    next-tools:
+      on-failure: [validate_map, get_status]
