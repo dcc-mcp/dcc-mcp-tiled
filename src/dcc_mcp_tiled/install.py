@@ -1,40 +1,15 @@
-"""Install the Tiled Python plug-in into a user plug-in directory."""
+"""Compatibility entry point that verifies the official Tiled CLI runtime."""
 
 from __future__ import annotations
 
-import argparse
-import os
-import shutil
-from pathlib import Path
+import json
 
-
-def default_plugin_dir() -> Path:
-    if os.name == "nt":
-        root = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
-        return root / "TILED/3.0/plug-ins"
-    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "TILED/3.0/plug-ins"
-
-
-def install(destination: Path | None = None) -> Path:
-    target = (destination or default_plugin_dir()).expanduser().resolve() / "dcc_mcp_tiled"
-    target.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parent / "tiled_plugin" / "dcc_mcp_tiled.py"
-    if not source.is_file():
-        source = (
-            Path(__file__).resolve().parents[2]
-            / "bridge"
-            / "tiled-plugin"
-            / "dcc_mcp_tiled.py"
-        )
-    if not source.is_file():
-        raise FileNotFoundError(f"Bundled TILED plug-in not found: {source}")
-    shutil.copy2(source, target / source.name)
-    if os.name != "nt":
-        (target / source.name).chmod(0o755)
-    return target
+from .bridge import TiledCli
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--destination", type=Path)
-    print(install(parser.parse_args().destination))
+    """Print a machine-readable runtime check; no fake plug-in is installed."""
+    status = TiledCli.from_env().status()
+    print(json.dumps(status, ensure_ascii=False, indent=2))
+    if not status.get("ready"):
+        raise SystemExit(1)

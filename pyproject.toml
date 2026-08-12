@@ -4,17 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dcc-mcp-tiled"
-version = "0.2.0"
-description = "Tiled adapter for the DCC Model Context Protocol"
+version = "0.3.0"
+description = "Typed Tiled map automation for the DCC Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "loonghao", email = "hal.long@outlook.com" }]
-keywords = ["tiled", "image-editing", "mcp", "dcc", "automation"]
+keywords = ["tiled", "tilemap", "level-design", "mcp", "dcc", "automation"]
 dependencies = ["dcc-mcp-core>=0.19.38,<1.0.0"]
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "pytest>=8", "ruff>=0.8", "twine>=6"]
+dev = [
+  "build>=1.2",
+  "pytest>=8",
+  "ruff>=0.8",
+  "twine>=7.0; python_version >= '3.10'",
+]
 
 [project.urls]
 Homepage = "https://github.com/dcc-mcp/dcc-mcp-tiled"
@@ -23,6 +28,7 @@ Issues = "https://github.com/dcc-mcp/dcc-mcp-tiled/issues"
 
 [project.scripts]
 dcc-mcp-tiled = "dcc_mcp_tiled.server:main"
+dcc-mcp-tiled-doctor = "dcc_mcp_tiled.install:main"
 dcc-mcp-tiled-install = "dcc_mcp_tiled.install:main"
 
 [project.entry-points."dcc_mcp.adapters"]
@@ -33,10 +39,20 @@ packages = ["src/dcc_mcp_tiled"]
 artifacts = ["src/dcc_mcp_tiled/skills/**"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge/tiled-plugin/dcc_mcp_tiled.py" = "dcc_mcp_tiled/tiled_plugin/dcc_mcp_tiled.py"
+"bridge/tiled-cli/dcc_mcp_tiled_driver.js" = "dcc_mcp_tiled/tiled_cli/driver.js"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/dcc_mcp_tiled", "bridge", "tests", "README.md", "LICENSE", "CHANGELOG.md", "tools"]
+include = [
+  "src/dcc_mcp_tiled",
+  "bridge",
+  "docs",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  "tools",
+]
+exclude = ["docs/**/*.png", "docs/**/*.svg", "docs/**/*.webp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
