@@ -6,7 +6,7 @@ description: >-
   level-layout, object-layer, external tileset, and tile-painting workflows.
   Do not use for controlling the interactive Tiled GUI.
 license: MIT
-compatibility: "Python 3.9+; Tiled 1.10+; dcc-mcp-core 0.19+"
+compatibility: "Python 3.9+; Tiled 1.10+; dcc-mcp-core/CLI >=0.20.14"
 allowed-tools: "python"
 metadata:
   dcc-mcp:

@@ -41,13 +41,27 @@ replace the requested output only after Tiled returns a valid, non-empty result.
 
 ## Install
 
-Install [Tiled](https://www.mapeditor.org/download.html) 1.10 or newer, then:
+Install [Tiled](https://www.mapeditor.org/download.html) 1.10 or newer, then
+follow the [agent-first installation guide](install.md). The adapter is not
+currently published on PyPI, so `pip install dcc-mcp-tiled` must not be treated
+as a working install path. Install a checksum-verified wheel from a trusted
+release or reviewed checkout, then run:
 
 ```bash
-pip install dcc-mcp-tiled
-dcc-mcp-tiled-doctor
+dcc-mcp-tiled-doctor doctor --json
+dcc-mcp-tiled-doctor verify --json
 dcc-mcp-tiled
 ```
+
+The deprecated `dcc-mcp-tiled-install` compatibility alias performs
+verification only and never writes an installation.
+
+When the fixed driver is unavailable, catalog planning is exposed only through
+`dcc-mcp-tiled-doctor catalog-plan --json`. That wrapper authenticates the
+exact Core 0.20.14 CLI bytes against Core's signed platform update manifest and
+rechecks the path and digest immediately before the read-only plan. Missing or
+untrusted executables return an explicit blocker instead of a placeholder or
+browser-only remediation.
 
 The adapter discovers `tiled`/`tiled.exe` from `PATH` and common Windows install
 locations. Set an explicit executable when needed:
@@ -93,6 +107,10 @@ map, writes two gameplay objects, validates it, converts it to TMX, starts the
 packaged MCP server, loads the bundled Skill, and completes a typed asynchronous
 `get_status` job. The smoke test verifies 10 registered typed tools and never
 uses a mock Tiled process.
+
+The adapter does not download Tiled and has no persistent binary cache. The CI
+AppImage exists only in the ephemeral runner workspace; operators own upgrades
+and cleanup for OS packages or exact, checksum-verified AppImages.
 
 TMJ/TMX outputs are suitable handoff artifacts for downstream Godot, Blender,
 and other game-content pipelines. This adapter validates the Tiled artifact; a

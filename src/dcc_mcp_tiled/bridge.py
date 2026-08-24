@@ -31,6 +31,10 @@ class TiledTimeoutError(TiledError):
     """Tiled did not complete before the configured deadline."""
 
 
+class TiledLaunchError(TiledError):
+    """The configured Tiled executable could not be launched."""
+
+
 def _split_roots(value: str) -> list[Path]:
     roots = []
     for item in value.split(os.pathsep):
@@ -209,15 +213,18 @@ class TiledCli:
             environment.setdefault("QT_QPA_PLATFORM", "offscreen")
         with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdout_file:
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr_file:
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    env=environment,
-                    creationflags=creationflags,
-                )
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        text=True,
+                        env=environment,
+                        creationflags=creationflags,
+                    )
+                except OSError as exc:
+                    raise TiledLaunchError("Tiled executable could not be launched") from exc
                 try:
                     deadline = started + timeout
                     while process.poll() is None:
