@@ -16,6 +16,7 @@ dependencies = ["dcc-mcp-core>=0.19.38,<1.0.0"]
 [project.optional-dependencies]
 dev = [
   "build>=1.2",
+  "jsonschema>=4.23",
   "pytest>=8",
   "ruff>=0.8",
   "twine>=7.0; python_version >= '3.10'",

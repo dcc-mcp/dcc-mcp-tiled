@@ -22,7 +22,7 @@ jobs:
           exit_code=$?
           set -e
           test "$exit_code" -eq 10
-          python -c 'import json; report=json.load(open("doctor.json", encoding="utf-8")); assert report["schema_version"] == "1.0"; assert report["exit_code"] == 10; assert report["directly_usable"] is False'
+          python -c 'import json; from jsonschema import Draft202012Validator; schema=json.load(open("tests/fixtures/adapter-install-sop-v1.schema.json", encoding="utf-8")); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["schema_version"] == 1; assert report["exit_code"] == 10; assert report["directly_usable"] is False'
       - run: python -m pytest
       - run: python -m ruff check src tests tools
       - run: python -m ruff format --check src tests tools
@@ -64,5 +64,5 @@ jobs:
           trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
           sleep 1
           DISPLAY=:99 dcc-mcp-tiled-doctor verify --json > doctor.json
-          python -c 'import json; report=json.load(open("doctor.json", encoding="utf-8")); assert report["exit_code"] == 0; assert report["directly_usable"] is True; assert report["runtime"]["version"] == "1.12.2"'
+          python -c 'import json; from jsonschema import Draft202012Validator; schema=json.load(open("tests/fixtures/adapter-install-sop-v1.schema.json", encoding="utf-8")); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["exit_code"] == 0; assert report["directly_usable"] is True; assert report["runtime"]["version"] == "1.12.2"'
           DISPLAY=:99 python tests/live_tiled_smoke.py

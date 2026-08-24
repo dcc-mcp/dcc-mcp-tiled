@@ -104,8 +104,13 @@ dcc-mcp-tiled-doctor verify --json
 
 The report includes executable discovery, Tiled and Qt versions, Core and Tiled
 floors, allowed roots, runtime limits, direct usability, a stable failure stage
-and reason, and structured `next_steps`. A successful report has
-`directly_usable: true`, `status: ok`, and `exit_code: 0`.
+and reason, and structured `next_steps`. It conforms to Install SOP schema v1:
+integer `schema_version: 1`, `dcc_type`, adapter/Core versions, `steps`,
+`receipt_path`, and the nested `verify` result are always present. Every
+remediation has `id`, `description`, and `why`, plus exactly one executable
+`command` or `file_edit`. A successful report has `directly_usable: true`,
+`status: ok`, and `exit_code: 0`; every unsuccessful report uses `status:
+failed` with exit 10 or 40.
 
 After starting `dcc-mcp-tiled`, use the DCC-MCP CLI to discover its registered
 loopback endpoint. Tiled itself has no network endpoint or credentials in this
