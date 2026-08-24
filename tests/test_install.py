@@ -261,11 +261,16 @@ def test_driver_missing_binds_the_official_floor_cli_to_python_core(
 def test_core_cli_floor_is_projected_into_package_docs_and_ci() -> None:
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     install_guide = (ROOT / "install.md").read_text(encoding="utf-8")
+    skill = (ROOT / "src" / "dcc_mcp_tiled" / "skills" / "tiled-maps" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    floor = install.MIN_CORE_VERSION
 
-    assert 'dependencies = ["dcc-mcp-core>=0.20.5,<1.0.0"]' in pyproject
-    assert "DCC-MCP Core 0.20.5 or newer" in install_guide
-    assert 'CORE_CLI_VERSION: "0.20.5"' in workflow
+    assert 'dependencies = ["dcc-mcp-core>=%s,<1.0.0"]' % floor in pyproject
+    assert "DCC-MCP Core %s or newer" % floor in install_guide
+    assert "dcc-mcp-core/CLI >=%s" % floor in skill
+    assert 'CORE_CLI_VERSION: "%s"' % floor in workflow
     assert "test_declared_core_floor_cli_executes_the_emitted_catalog_plan" in workflow
 
 
