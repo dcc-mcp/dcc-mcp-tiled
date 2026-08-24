@@ -31,6 +31,30 @@ jobs:
       - if: matrix.python-version == '3.12'
         run: python -m twine check dist/*
 
+  core-cli-floor:
+    runs-on: ubuntu-latest
+    env:
+      CORE_CLI_VERSION: "0.20.5"
+      CORE_CLI_SHA256: "d0d83f9eee66b18e9e1125eb3e6d0951c498b2d247db69a3889915accf7dbfa7"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: python -m pip install -e ".[dev]"
+      - name: Download verified Core CLI floor
+        run: |
+          curl --fail --location --output "${RUNNER_TEMP}/dcc-mcp-cli" \
+            "https://github.com/dcc-mcp/dcc-mcp-core/releases/download/v${CORE_CLI_VERSION}/dcc-mcp-cli-linux-x86_64"
+          echo "${CORE_CLI_SHA256}  ${RUNNER_TEMP}/dcc-mcp-cli" | sha256sum --check --strict
+          chmod +x "${RUNNER_TEMP}/dcc-mcp-cli"
+      - name: Execute the declared-floor Tiled catalog plan
+        env:
+          DCC_MCP_TILED_CORE_FLOOR_CLI: "${{ runner.temp }}/dcc-mcp-cli"
+        run: |
+          python -m pytest -q \
+            tests/test_install.py::test_declared_core_floor_cli_executes_the_emitted_catalog_plan \
+            tests/test_install.py::test_driver_missing_binds_the_official_floor_cli_to_python_core
+
   tiled-live:
     runs-on: ubuntu-latest
     env:

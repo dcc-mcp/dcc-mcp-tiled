@@ -6,6 +6,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +18,7 @@ from dcc_mcp_core import __version__ as core_version
 from .__version__ import __version__
 from .bridge import TiledCli, TiledError, TiledLaunchError, TiledTimeoutError
 
-MIN_CORE_VERSION = "0.19.38"
+MIN_CORE_VERSION = "0.20.5"
 MIN_TILED_VERSION = "1.10.0"
 INSTALL_GUIDE_URL = "https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-tiled/main/install.md"
 _VERSION_COMPONENT = r"(?:0|[1-9][0-9]{0,5})"
@@ -54,6 +56,28 @@ def _bounded_version_text(value: object) -> str:
     if isinstance(value, str) and 0 < len(value) <= _MAX_VERSION_LENGTH:
         return value
     return "invalid"
+
+
+def _probe_core_cli_version() -> Optional[str]:
+    executable = shutil.which("dcc-mcp-cli")
+    if executable is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    prefix = "dcc-mcp-cli "
+    output = completed.stdout.strip()
+    version = output[len(prefix) :] if output.startswith(prefix) else ""
+    return version if _version_tuple(version) is not None else None
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -113,12 +137,35 @@ def _select_tiled_step(reason: str) -> dict[str, Any]:
     )
 
 
+def _matching_core_cli_step() -> dict[str, Any]:
+    return _command_step(
+        "install-matching-core-cli",
+        "Install the official Core CLI release matching the Python Core package.",
+        [
+            sys.executable,
+            "-m",
+            "webbrowser",
+            "https://github.com/dcc-mcp/dcc-mcp-core/releases/tag/v%s" % core_version,
+        ],
+        (
+            "Catalog remediation is safe only when the PATH CLI and imported "
+            "Python Core are the same final release."
+        ),
+        action="install_core_cli",
+        minimum_version=MIN_CORE_VERSION,
+        expected_cli_version=core_version,
+        requires_checksum_verification=True,
+    )
+
+
 def _report(
     request: DoctorRequest,
     status: dict[str, Any],
     exit_code: int,
     failure: Optional[dict[str, str]],
     next_steps: list[dict[str, Any]],
+    *,
+    core_cli_version: Optional[str] = None,
 ) -> dict[str, Any]:
     status = dict(status)
     if "version" in status:
@@ -174,8 +221,15 @@ def _report(
         },
         "requirements": {
             "min_core_version": MIN_CORE_VERSION,
+            "min_core_cli_version": MIN_CORE_VERSION,
             "min_tiled_version": MIN_TILED_VERSION,
             "core_version": reported_core_version,
+            "core_cli_version": (
+                _bounded_version_text(core_cli_version) if core_cli_version is not None else None
+            ),
+            "core_cli_matches_python": (
+                core_cli_version == core_version if core_cli_version is not None else None
+            ),
         },
         "configuration": {
             "allowed_roots": status.get("allowed_roots", []),
@@ -293,6 +347,27 @@ def _evaluate(request: DoctorRequest, cli: TiledCli) -> dict[str, Any]:
         )
     if not status.get("ready"):
         reason = str(status.get("reason") or "tiled_not_ready")
+        core_cli_version: Optional[str] = None
+        if reason == "driver_missing":
+            core_cli_version = _probe_core_cli_version()
+            if core_cli_version is None:
+                return _report(
+                    request,
+                    status,
+                    10,
+                    {"stage": "core_cli_preflight", "reason": "core_cli_unavailable"},
+                    [_matching_core_cli_step()],
+                    core_cli_version=core_cli_version,
+                )
+            if core_cli_version != core_version:
+                return _report(
+                    request,
+                    status,
+                    10,
+                    {"stage": "core_cli_preflight", "reason": "core_cli_version_mismatch"},
+                    [_matching_core_cli_step()],
+                    core_cli_version=core_cli_version,
+                )
         stage = "driver_preflight" if reason == "driver_missing" else "executable_discovery"
         next_step = (
             _command_step(
@@ -332,6 +407,7 @@ def _evaluate(request: DoctorRequest, cli: TiledCli) -> dict[str, Any]:
                     action="rerun_verify",
                 ),
             ],
+            core_cli_version=core_cli_version,
         )
     if _version_tuple(status.get("version")) is None:
         return _report(

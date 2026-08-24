@@ -3,7 +3,8 @@
 ## Requirements
 
 - Python 3.9 or newer.
-- DCC-MCP Core 0.19.38 or newer.
+- DCC-MCP Core 0.20.5 or newer, with the same canonical final release of
+  `dcc-mcp-cli` on `PATH` before catalog remediation is offered.
 - Tiled 1.10.0 or newer with the official `--evaluate` scripting interface.
 - A trusted `dcc-mcp-tiled` wheel. The project is not currently published on
   PyPI, and the Core catalog does not yet provide a pinned install URL and
@@ -169,11 +170,22 @@ Run the returned `dcc-mcp-cli install --dcc-type tiled --output json
 read-only planning and does not install or repair the adapter. Accept a wheel
 only when the plan or another trusted source provides an immutable artifact and
 SHA-256; the current PyPI and pinned catalog publication work is still pending.
+The doctor emits this command only after the imported Python Core and the PATH
+CLI report the same supported final version. Core 0.20.5 is the first declared
+floor whose official CLI release is exercised against this exact command.
 
 ### `core_version_below_floor` / exit 10
 
-Upgrade DCC-MCP Core to at least 0.19.38 in the same Python environment as the
+Upgrade DCC-MCP Core to at least 0.20.5 in the same Python environment as the
 adapter.
+
+### `core_cli_unavailable` / `core_cli_version_mismatch` / exit 10
+
+Install the official `dcc-mcp-cli` asset for the same final release reported by
+the imported Python Core package. The returned bounded command opens that exact
+Core release page; verify the published checksum before placing the CLI on
+`PATH`, then rerun doctor. A mismatched or unlaunchable CLI is never used to
+resolve a catalog plan.
 
 ### `invalid_environment` / exit 10
 
