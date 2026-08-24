@@ -22,7 +22,7 @@ jobs:
           exit_code=$?
           set -e
           test "$exit_code" -eq 10
-          python -c 'import json; from jsonschema import Draft202012Validator; schema=json.load(open("tests/fixtures/adapter-install-sop-v1.schema.json", encoding="utf-8")); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["schema_version"] == 1; assert report["exit_code"] == 10; assert report["directly_usable"] is False'
+          python -c 'import json; from dcc_mcp_core.deployment import load_install_sop_schema; from jsonschema import Draft202012Validator; schema=load_install_sop_schema(); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["schema_version"] == 1; assert report["exit_code"] == 10; assert report["directly_usable"] is False'
       - run: python -m pytest
       - run: python -m ruff check src tests tools
       - run: python -m ruff format --check src tests tools
@@ -34,13 +34,13 @@ jobs:
   core-cli-floor:
     runs-on: ubuntu-latest
     env:
-      CORE_CLI_VERSION: "0.20.5"
-      CORE_CLI_SHA256: "d0d83f9eee66b18e9e1125eb3e6d0951c498b2d247db69a3889915accf7dbfa7"
+      CORE_CLI_VERSION: "0.20.14"
+      CORE_CLI_SHA256: "312bc63f744b62c34ccd48405f77d900d0a8a6d0b7dd18cddfaa4cb34aa4cb56"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: python -m pip install -e ".[dev]"
+      - run: python -m pip install "dcc-mcp-core==${CORE_CLI_VERSION}" -e ".[dev]"
       - name: Download verified Core CLI floor
         run: |
           curl --fail --location --output "${RUNNER_TEMP}/dcc-mcp-cli" \
@@ -88,5 +88,5 @@ jobs:
           trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
           sleep 1
           DISPLAY=:99 dcc-mcp-tiled-doctor verify --json > doctor.json
-          python -c 'import json; from jsonschema import Draft202012Validator; schema=json.load(open("tests/fixtures/adapter-install-sop-v1.schema.json", encoding="utf-8")); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["exit_code"] == 0; assert report["directly_usable"] is True; assert report["runtime"]["version"] == "1.12.2"'
+          python -c 'import json; from dcc_mcp_core.deployment import load_install_sop_schema; from jsonschema import Draft202012Validator; schema=load_install_sop_schema(); report=json.load(open("doctor.json", encoding="utf-8")); Draft202012Validator.check_schema(schema); Draft202012Validator(schema).validate(report); assert report["exit_code"] == 0; assert report["directly_usable"] is True; assert report["runtime"]["version"] == "1.12.2"'
           DISPLAY=:99 python tests/live_tiled_smoke.py

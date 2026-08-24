@@ -2,24 +2,39 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
+from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION, load_install_sop_schema
 from jsonschema import Draft202012Validator
 
 from dcc_mcp_tiled import install
 from dcc_mcp_tiled.bridge import TiledCli, TiledTimeoutError
 
 ROOT = Path(__file__).parents[1]
-INSTALL_SOP_SCHEMA = json.loads(
-    (ROOT / "tests" / "fixtures" / "adapter-install-sop-v1.schema.json").read_text(encoding="utf-8")
-)
+INSTALL_SOP_SCHEMA = load_install_sop_schema()
 INSTALL_SOP_VALIDATOR = Draft202012Validator(INSTALL_SOP_SCHEMA)
 Draft202012Validator.check_schema(INSTALL_SOP_SCHEMA)
+
+
+def test_install_reports_consume_the_published_core_schema_resource() -> None:
+    schema_resource = files("dcc_mcp_core").joinpath("schemas/adapter-install-sop-v1.schema.json")
+    schema_bytes = schema_resource.read_bytes()
+
+    assert not (ROOT / "tests/fixtures/adapter-install-sop-v1.schema.json").exists()
+    assert INSTALL_SOP_SCHEMA_VERSION == 1
+    assert len(schema_bytes) == 4261
+    assert hashlib.sha256(schema_bytes).hexdigest() == (
+        "3ca25788439917b4d4c0617230a762f9797756b5b54f45c8c4149f975b90f904"
+    )
+    assert b"\r\n" not in schema_bytes
+    assert load_install_sop_schema() == json.loads(schema_bytes)
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +89,7 @@ def test_doctor_reports_missing_tiled_as_preflight_json(tmp_path, capsys) -> Non
     assert report["schema_version"] == 1
     assert report["legacy_schema_version"] == "1.0"
     assert report["legacy_status"] == "not_ready"
+    assert report["adapter"]["contract"] == "core_install_sop_v1_verify_only"
     assert report["operation"] == "doctor"
     assert report["directly_usable"] is False
     assert report["failure"] == {
@@ -123,8 +139,8 @@ def test_driver_missing_fails_closed_when_path_cli_does_not_match_python_core(
 ) -> None:
     executable = tmp_path / "tiled"
     executable.write_text("placeholder", encoding="utf-8")
-    monkeypatch.setattr(install, "core_version", "0.20.5")
-    monkeypatch.setattr(install, "_probe_core_cli_version", lambda: "0.20.6")
+    monkeypatch.setattr(install, "core_version", "0.20.14")
+    monkeypatch.setattr(install, "_probe_core_cli_version", lambda: "0.20.15")
     monkeypatch.setattr(
         TiledCli,
         "_default_driver_path",
@@ -140,14 +156,14 @@ def test_driver_missing_fails_closed_when_path_cli_does_not_match_python_core(
         "stage": "core_cli_preflight",
         "reason": "core_cli_version_mismatch",
     }
-    assert report["requirements"]["core_version"] == "0.20.5"
-    assert report["requirements"]["core_cli_version"] == "0.20.6"
+    assert report["requirements"]["core_version"] == "0.20.14"
+    assert report["requirements"]["core_cli_version"] == "0.20.15"
     assert report["next_steps"][0]["id"] == "install-matching-core-cli"
     assert report["next_steps"][0]["command"] == [
         sys.executable,
         "-m",
         "webbrowser",
-        "https://github.com/dcc-mcp/dcc-mcp-core/releases/tag/v0.20.5",
+        "https://github.com/dcc-mcp/dcc-mcp-core/releases/tag/v0.20.14",
     ]
     assert "dcc-mcp-cli" not in report["next_steps"][0]["command"]
 
@@ -214,10 +230,13 @@ def test_declared_core_floor_cli_executes_the_emitted_catalog_plan() -> None:
     assert plan["dcc_type"] == "tiled"
     assert plan["adapter"]["name"] == "dcc-mcp-tiled"
     assert [step["name"] for step in plan["steps"]] == [
-        "install-pip",
-        "register-dcc",
+        "resolve-adapter",
+        "install-runtime",
+        "install-dcc-adapter",
         "verify",
     ]
+    assert plan["next_steps"][0]["name"] == "read-install-instructions"
+    assert plan["next_steps"][0]["url"] == install.INSTALL_GUIDE_URL
 
 
 def test_driver_missing_binds_the_official_floor_cli_to_python_core(
@@ -244,8 +263,8 @@ def test_driver_missing_binds_the_official_floor_cli_to_python_core(
         "stage": "driver_preflight",
         "reason": "driver_missing",
     }
-    assert report["requirements"]["core_version"] == "0.20.5"
-    assert report["requirements"]["core_cli_version"] == "0.20.5"
+    assert report["requirements"]["core_version"] == "0.20.14"
+    assert report["requirements"]["core_cli_version"] == "0.20.14"
     assert report["requirements"]["core_cli_matches_python"] is True
     assert report["next_steps"][0]["command"] == [
         "dcc-mcp-cli",
@@ -267,10 +286,12 @@ def test_core_cli_floor_is_projected_into_package_docs_and_ci() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     floor = install.MIN_CORE_VERSION
 
+    assert floor == "0.20.14"
     assert 'dependencies = ["dcc-mcp-core>=%s,<1.0.0"]' % floor in pyproject
     assert "DCC-MCP Core %s or newer" % floor in install_guide
     assert "dcc-mcp-core/CLI >=%s" % floor in skill
     assert 'CORE_CLI_VERSION: "%s"' % floor in workflow
+    assert "dcc-mcp-core==${CORE_CLI_VERSION}" in workflow
     assert "test_declared_core_floor_cli_executes_the_emitted_catalog_plan" in workflow
 
 
@@ -292,8 +313,8 @@ def test_verify_reports_runtime_versions_configuration_and_floors(
     assert report["operation"] == "verify"
     assert report["directly_usable"] is True
     assert report["failure"] is None
-    assert report["requirements"]["min_core_version"] == "0.20.5"
-    assert report["requirements"]["min_core_cli_version"] == "0.20.5"
+    assert report["requirements"]["min_core_version"] == "0.20.14"
+    assert report["requirements"]["min_core_cli_version"] == "0.20.14"
     assert report["requirements"]["min_tiled_version"] == "1.10.0"
     assert report["runtime"]["version"] == "1.12.2"
     assert report["runtime"]["qt_version"] == "6.8.3"

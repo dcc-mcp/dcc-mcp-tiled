@@ -1,4 +1,4 @@
-"""Thin standalone verification compatibility layer pending Core #2252/#2320."""
+"""Standalone Tiled verification backed by Core Install SOP v1."""
 
 from __future__ import annotations
 
@@ -14,11 +14,12 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from dcc_mcp_core import __version__ as core_version
+from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
 
 from .__version__ import __version__
 from .bridge import TiledCli, TiledError, TiledLaunchError, TiledTimeoutError
 
-MIN_CORE_VERSION = "0.20.5"
+MIN_CORE_VERSION = "0.20.14"
 MIN_TILED_VERSION = "1.10.0"
 INSTALL_GUIDE_URL = "https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-tiled/main/install.md"
 _VERSION_COMPONENT = r"(?:0|[1-9][0-9]{0,5})"
@@ -190,7 +191,7 @@ def _report(
         }
     ]
     return {
-        "schema_version": 1,
+        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
         "legacy_schema_version": "1.0",
         "status": "ok" if directly_usable else "failed",
         "legacy_status": "ok" if directly_usable else "error" if exit_code == 40 else "not_ready",
@@ -211,7 +212,7 @@ def _report(
             "name": "dcc-mcp-tiled",
             "version": __version__,
             "runtime_shape": "standalone",
-            "contract": "adapter_compatibility_pending_core_2252_2320",
+            "contract": "core_install_sop_v1_verify_only",
         },
         "compatibility": {
             "deprecated_install_alias": request.install_alias,
