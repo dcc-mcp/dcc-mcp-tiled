@@ -21,6 +21,13 @@
 - Add unit, Skill-schema, packaging, Python 3.9/3.12, and pinned Tiled 1.12.2
   native end-to-end release gates.
 
+## [0.4.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.3.0...v0.4.0) (2026-08-24)
+
+
+### Features
+
+* add Tiled install verification ([#5](https://github.com/dcc-mcp/dcc-mcp-tiled/issues/5)) ([1f0cca7](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/1f0cca70d357d8f9ccd1d9d59600c7dc9de4a3c0))
+
 ## [0.3.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.2.0...v0.3.0) (2026-08-12)
 
 
