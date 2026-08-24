@@ -162,6 +162,14 @@ the exact verified file executable.
 Upgrade Tiled to 1.10.0 or newer, then rerun verification. CI's pinned 1.12.2
 version is the strongest automated compatibility evidence.
 
+### `driver_missing` / exit 10
+
+Run the returned `dcc-mcp-cli install --dcc-type tiled --output json
+--non-interactive` command to resolve the current adapter catalog plan. This is
+read-only planning and does not install or repair the adapter. Accept a wheel
+only when the plan or another trusted source provides an immutable artifact and
+SHA-256; the current PyPI and pinned catalog publication work is still pending.
+
 ### `core_version_below_floor` / exit 10
 
 Upgrade DCC-MCP Core to at least 0.19.38 in the same Python environment as the

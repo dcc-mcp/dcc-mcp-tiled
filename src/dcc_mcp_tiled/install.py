@@ -296,18 +296,23 @@ def _evaluate(request: DoctorRequest, cli: TiledCli) -> dict[str, Any]:
         stage = "driver_preflight" if reason == "driver_missing" else "executable_discovery"
         next_step = (
             _command_step(
-                "reinstall-adapter",
-                "Reinstall the adapter wheel to restore the bundled Tiled driver.",
+                "resolve-adapter-artifact",
+                "Resolve the current Tiled adapter install plan without executing it.",
                 [
-                    sys.executable,
-                    "-m",
-                    "pip",
+                    "dcc-mcp-cli",
                     "install",
-                    "--force-reinstall",
-                    "dcc-mcp-tiled==%s" % __version__,
+                    "--dcc-type",
+                    "tiled",
+                    "--output",
+                    "json",
+                    "--non-interactive",
                 ],
-                "The bundled fixed Tiled driver is missing.",
-                action="reinstall_adapter",
+                "The bundled fixed Tiled driver is missing, and no immutable wheel is available "
+                "from this report.",
+                action="resolve_adapter_artifact",
+                executes_install=False,
+                instructions_url=INSTALL_GUIDE_URL,
+                requires_verified_wheel=True,
             )
             if reason == "driver_missing"
             else _select_tiled_step("Tiled was not discovered at a supported executable path.")

@@ -76,6 +76,40 @@ def test_doctor_reports_missing_tiled_as_preflight_json(tmp_path, capsys) -> Non
     assert report["next_steps"]
 
 
+def test_doctor_driver_missing_uses_read_only_catalog_resolution(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    executable = tmp_path / "tiled"
+    executable.write_text("placeholder", encoding="utf-8")
+    monkeypatch.setattr(
+        TiledCli,
+        "_default_driver_path",
+        staticmethod(lambda: tmp_path / "missing-driver.js"),
+    )
+
+    exit_code = install.main(["doctor", "--json", "--executable", str(executable)])
+
+    report = json.loads(capsys.readouterr().out)
+    INSTALL_SOP_VALIDATOR.validate(report)
+    assert exit_code == 10
+    assert report["failure"] == {
+        "stage": "driver_preflight",
+        "reason": "driver_missing",
+    }
+    remediation = report["next_steps"][0]
+    assert remediation["command"] == [
+        "dcc-mcp-cli",
+        "install",
+        "--dcc-type",
+        "tiled",
+        "--output",
+        "json",
+        "--non-interactive",
+    ]
+    assert "--execute" not in remediation["command"]
+    assert "dcc-mcp-tiled==" not in json.dumps(remediation)
+
+
 def test_verify_reports_runtime_versions_configuration_and_floors(
     tmp_path, monkeypatch, capsys
 ) -> None:
