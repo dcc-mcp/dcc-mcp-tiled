@@ -3,8 +3,11 @@
 ## Requirements
 
 - Python 3.9 or newer.
-- DCC-MCP Core 0.20.14 or newer, with the same canonical final release of
-  `dcc-mcp-cli` on `PATH` before catalog remediation is offered.
+- DCC-MCP Core 0.20.14 or newer. Catalog planning additionally requires the
+  exact official Core 0.20.14 CLI asset selected by
+  `DCC_MCP_TILED_CORE_CLI` or `PATH`; the doctor checks its full SHA-256
+  against the platform update manifest that Core publishes with a Sigstore
+  bundle. Matching `--version` output alone is never trusted.
 - Tiled 1.10.0 or newer with the official `--evaluate` scripting interface.
 - A trusted `dcc-mcp-tiled` wheel. The project is not currently published on
   PyPI, and the Core catalog does not yet provide a pinned install URL and
@@ -72,6 +75,11 @@ Exit codes are stable:
    export DCC_MCP_TILED_EXECUTABLE="/opt/tiled/Tiled-1.12.2.AppImage"             # Linux
    ```
 
+   A missing or unverifiable executable is reported as
+   `verified_tiled_acquisition_required` with no synthetic command or path
+   placeholder. Install and verify the operator-selected Tiled release before
+   retrying.
+
 4. Set the map and art roots that the adapter may access. Windows separates
    roots with `;`; macOS and Linux use `:`:
 
@@ -109,7 +117,9 @@ and reason, and structured `next_steps`. It conforms to Install SOP schema v1:
 integer `schema_version: 1`, `dcc_type`, adapter/Core versions, `steps`,
 `receipt_path`, and the nested `verify` result are always present. Every
 remediation has `id`, `description`, and `why`, plus exactly one executable
-`command` or `file_edit`. A successful report has `directly_usable: true`,
+`command` or `file_edit`. When no bounded executable continuation exists, the
+report instead returns an explicit `blocker` and an empty `next_steps` array.
+A successful report has `directly_usable: true`,
 `status: ok`, and `exit_code: 0`; every unsuccessful report uses `status:
 failed` with exit 10 or 40.
 
@@ -154,9 +164,11 @@ binary cache or host plug-in directory to clean.
 
 ### `tiled_not_found` / exit 10
 
-Install a supported Tiled release or set `DCC_MCP_TILED_EXECUTABLE` to its exact
-executable. On macOS, point inside `Tiled.app`; on Linux AppImage installs, make
-the exact verified file executable.
+Install a supported Tiled release, verify the selected artifact, and set
+`DCC_MCP_TILED_EXECUTABLE` to its exact executable. On macOS, point inside
+`Tiled.app`; on Linux AppImage installs, make the exact verified file
+executable. The doctor deliberately returns an honest blocker rather than a
+command containing an unknown path.
 
 ### `tiled_version_below_floor` / exit 10
 
@@ -165,27 +177,31 @@ version is the strongest automated compatibility evidence.
 
 ### `driver_missing` / exit 10
 
-Run the returned `dcc-mcp-cli install --dcc-type tiled --output json
---non-interactive` command to resolve the current adapter catalog plan. This is
-read-only planning and does not install or repair the adapter. Accept a wheel
-only when the plan or another trusted source provides an immutable artifact and
-SHA-256; the current PyPI and pinned catalog publication work is still pending.
-The doctor emits this command only after the imported Python Core and the PATH
-CLI report the same supported final version. Core 0.20.14 is the first supported
-release that publishes the canonical Install SOP schema loader used by this adapter.
+Run the returned `dcc-mcp-tiled-doctor catalog-plan --json` command to resolve
+the current adapter catalog plan. The wrapper resolves one exact CLI path,
+checks its size and SHA-256 against Core 0.20.14's platform update manifest,
+binds the manifest and Sigstore-bundle digests, repeats those checks immediately
+before execution, and invokes the CLI without a shell. A PATH or file
+replacement fails closed. Planning is read-only and does not install or repair
+the adapter. Accept a wheel only when the plan or another trusted source
+provides an immutable artifact and SHA-256; the current PyPI and pinned catalog
+publication work is still pending. The following retry retains the exact Tiled
+executable selected by the original doctor request.
 
 ### `core_version_below_floor` / exit 10
 
 Upgrade DCC-MCP Core to at least 0.20.14 in the same Python environment as the
 adapter.
 
-### `core_cli_unavailable` / `core_cli_version_mismatch` / exit 10
+### `core_cli_unavailable` / `core_cli_untrusted` / `core_cli_version_mismatch` / exit 10
 
 Install the official `dcc-mcp-cli` asset for the same final release reported by
-the imported Python Core package. The returned bounded command opens that exact
-Core release page; verify the published checksum before placing the CLI on
-`PATH`, then rerun doctor. A mismatched or unlaunchable CLI is never used to
-resolve a catalog plan.
+the imported Python Core package. Verify the release's signed platform update
+manifest and CLI checksum, then set `DCC_MCP_TILED_CORE_CLI` to that absolute
+asset path or place only that asset on `PATH`. The report is an honest blocker;
+it does not open a browser or claim that version output proves provenance. A
+missing, mismatched, replaced, or digest-invalid CLI is never used to resolve a
+catalog plan.
 
 ### `invalid_environment` / exit 10
 

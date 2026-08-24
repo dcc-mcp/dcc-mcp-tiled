@@ -96,7 +96,12 @@ def test_doctor_reports_missing_tiled_as_preflight_json(tmp_path, capsys) -> Non
         "stage": "executable_discovery",
         "reason": "tiled_not_found",
     }
-    assert report["next_steps"]
+    assert report["next_steps"] == []
+    assert report["blocker"] == {
+        "reason": "verified_tiled_acquisition_required",
+        "instructions_url": install.INSTALL_GUIDE_URL,
+        "minimum_version": install.MIN_TILED_VERSION,
+    }
 
 
 def test_doctor_driver_missing_uses_read_only_catalog_resolution(
@@ -109,7 +114,22 @@ def test_doctor_driver_missing_uses_read_only_catalog_resolution(
         "_default_driver_path",
         staticmethod(lambda: tmp_path / "missing-driver.js"),
     )
-    monkeypatch.setattr(install, "_probe_core_cli_version", lambda: install.core_version)
+    cli = tmp_path / "dcc-mcp-cli"
+    cli.write_bytes(b"official cli fixture")
+    monkeypatch.setattr(
+        install,
+        "_probe_core_cli",
+        lambda: install.CoreCliProbe(
+            install.VerifiedCoreCli(
+                path=str(cli.resolve()),
+                version=install.core_version,
+                sha256="a" * 64,
+                manifest_sha256="b" * 64,
+                manifest_bundle_sha256="c" * 64,
+            ),
+            None,
+        ),
+    )
 
     exit_code = install.main(["doctor", "--json", "--executable", str(executable)])
 
@@ -122,16 +142,34 @@ def test_doctor_driver_missing_uses_read_only_catalog_resolution(
     }
     remediation = report["next_steps"][0]
     assert remediation["command"] == [
-        "dcc-mcp-cli",
-        "install",
-        "--dcc-type",
-        "tiled",
-        "--output",
-        "json",
-        "--non-interactive",
+        "dcc-mcp-tiled-doctor",
+        "catalog-plan",
+        "--json",
     ]
-    assert "--execute" not in remediation["command"]
-    assert "dcc-mcp-tiled==" not in json.dumps(remediation)
+    assert report["next_steps"][1]["command"] == [
+        "dcc-mcp-tiled-doctor",
+        "doctor",
+        "--json",
+        "--executable",
+        str(executable.resolve()),
+    ]
+    assert report["requirements"]["core_cli_path"] == str(cli.resolve())
+    assert report["requirements"]["core_cli_sha256"] == "a" * 64
+
+    monkeypatch.setattr(
+        TiledCli,
+        "_default_driver_path",
+        staticmethod(lambda: ROOT / "bridge" / "tiled-cli" / "dcc_mcp_tiled_driver.js"),
+    )
+    install_status_runner(monkeypatch, "1.12.2", "6.8.3")
+    retry_command = report["next_steps"][1]["command"]
+
+    retry_exit = install.main(retry_command[1:])
+
+    retry_report = json.loads(capsys.readouterr().out)
+    INSTALL_SOP_VALIDATOR.validate(retry_report)
+    assert retry_exit == 0
+    assert retry_report["discovery"]["executable"] == str(executable.resolve())
 
 
 def test_driver_missing_fails_closed_when_path_cli_does_not_match_python_core(
@@ -140,7 +178,20 @@ def test_driver_missing_fails_closed_when_path_cli_does_not_match_python_core(
     executable = tmp_path / "tiled"
     executable.write_text("placeholder", encoding="utf-8")
     monkeypatch.setattr(install, "core_version", "0.20.14")
-    monkeypatch.setattr(install, "_probe_core_cli_version", lambda: "0.20.15")
+    monkeypatch.setattr(
+        install,
+        "_probe_core_cli",
+        lambda: install.CoreCliProbe(
+            install.VerifiedCoreCli(
+                path=str((tmp_path / "dcc-mcp-cli").resolve()),
+                version="0.20.15",
+                sha256="a" * 64,
+                manifest_sha256="b" * 64,
+                manifest_bundle_sha256="c" * 64,
+            ),
+            None,
+        ),
+    )
     monkeypatch.setattr(
         TiledCli,
         "_default_driver_path",
@@ -158,14 +209,73 @@ def test_driver_missing_fails_closed_when_path_cli_does_not_match_python_core(
     }
     assert report["requirements"]["core_version"] == "0.20.14"
     assert report["requirements"]["core_cli_version"] == "0.20.15"
-    assert report["next_steps"][0]["id"] == "install-matching-core-cli"
-    assert report["next_steps"][0]["command"] == [
-        sys.executable,
-        "-m",
-        "webbrowser",
-        "https://github.com/dcc-mcp/dcc-mcp-core/releases/tag/v0.20.14",
-    ]
-    assert "dcc-mcp-cli" not in report["next_steps"][0]["command"]
+    assert report["next_steps"] == []
+    assert report["blocker"]["reason"] == "verified_core_cli_required"
+    assert report["blocker"]["probe_failure"] == "version_mismatch"
+
+
+def test_fake_same_version_core_cli_fails_attestation_before_catalog_action(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.delenv("DCC_MCP_TILED_CORE_CLI", raising=False)
+    executable = tmp_path / "tiled"
+    executable.write_text("placeholder", encoding="utf-8")
+    fake_cli = tmp_path / "dcc-mcp-cli"
+    fake_cli.write_bytes(b"fake same-version binary")
+    monkeypatch.setattr(install.shutil, "which", lambda _name: str(fake_cli))
+    monkeypatch.setattr(
+        install.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, "dcc-mcp-cli 0.20.14\n", ""
+        ),
+    )
+    monkeypatch.setattr(
+        TiledCli,
+        "_default_driver_path",
+        staticmethod(lambda: tmp_path / "missing-driver.js"),
+    )
+
+    exit_code = install.main(["doctor", "--json", "--executable", str(executable)])
+
+    report = json.loads(capsys.readouterr().out)
+    INSTALL_SOP_VALIDATOR.validate(report)
+    assert exit_code == 10
+    assert report["failure"] == {
+        "stage": "core_cli_preflight",
+        "reason": "core_cli_untrusted",
+    }
+    assert report["next_steps"] == []
+    assert report["blocker"]["reason"] == "verified_core_cli_required"
+
+
+def test_catalog_wrapper_detects_cli_replacement_before_action(monkeypatch, capsys) -> None:
+    verified = install.VerifiedCoreCli(
+        path=str((ROOT / "verified-dcc-mcp-cli").resolve()),
+        version=install.MIN_CORE_VERSION,
+        sha256="a" * 64,
+        manifest_sha256="b" * 64,
+        manifest_bundle_sha256="c" * 64,
+    )
+    probes = iter(
+        [
+            install.CoreCliProbe(verified, None),
+            install.CoreCliProbe(None, "path_changed"),
+        ]
+    )
+    monkeypatch.setattr(install, "_probe_core_cli", lambda: next(probes))
+
+    exit_code = install.main(["catalog-plan", "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    INSTALL_SOP_VALIDATOR.validate(report)
+    assert exit_code == 10
+    assert report["failure"] == {
+        "stage": "core_cli_preflight",
+        "reason": "core_cli_replaced",
+    }
+    assert report["next_steps"] == []
+    assert report["blocker"]["probe_failure"] == "replacement_detected"
 
 
 def test_driver_missing_fails_closed_when_path_cli_is_unavailable(
@@ -173,7 +283,11 @@ def test_driver_missing_fails_closed_when_path_cli_is_unavailable(
 ) -> None:
     executable = tmp_path / "tiled"
     executable.write_text("placeholder", encoding="utf-8")
-    monkeypatch.setattr(install, "_probe_core_cli_version", lambda: None)
+    monkeypatch.setattr(
+        install,
+        "_probe_core_cli",
+        lambda: install.CoreCliProbe(None, "not_found"),
+    )
     monkeypatch.setattr(
         TiledCli,
         "_default_driver_path",
@@ -191,10 +305,12 @@ def test_driver_missing_fails_closed_when_path_cli_is_unavailable(
     }
     assert report["requirements"]["core_cli_version"] is None
     assert report["requirements"]["core_cli_matches_python"] is None
-    assert report["next_steps"][0]["id"] == "install-matching-core-cli"
+    assert report["next_steps"] == []
+    assert report["blocker"]["reason"] == "verified_core_cli_required"
+    assert report["blocker"]["probe_failure"] == "not_found"
 
 
-def test_declared_core_floor_cli_executes_the_emitted_catalog_plan() -> None:
+def test_declared_core_floor_cli_executes_the_emitted_catalog_plan(monkeypatch, capsys) -> None:
     cli_text = os.environ.get("DCC_MCP_TILED_CORE_FLOOR_CLI")
     if not cli_text:
         pytest.skip("set DCC_MCP_TILED_CORE_FLOOR_CLI to the official floor binary")
@@ -210,23 +326,11 @@ def test_declared_core_floor_cli_executes_the_emitted_catalog_plan() -> None:
     assert version.returncode == 0
     assert version.stdout.strip() == "dcc-mcp-cli %s" % install.MIN_CORE_VERSION
 
-    completed = subprocess.run(
-        [
-            str(cli),
-            "install",
-            "--dcc-type",
-            "tiled",
-            "--output",
-            "json",
-            "--non-interactive",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert completed.returncode == 0, completed.stderr
-    plan = json.loads(completed.stdout)
+    monkeypatch.setenv("DCC_MCP_TILED_CORE_CLI", str(cli))
+    exit_code = install.main(["catalog-plan", "--json"])
+
+    assert exit_code == 0
+    plan = json.loads(capsys.readouterr().out)
     assert plan["dcc_type"] == "tiled"
     assert plan["adapter"]["name"] == "dcc-mcp-tiled"
     assert [step["name"] for step in plan["steps"]] == [
@@ -239,6 +343,35 @@ def test_declared_core_floor_cli_executes_the_emitted_catalog_plan() -> None:
     assert plan["next_steps"][0]["url"] == install.INSTALL_GUIDE_URL
 
 
+def test_declared_core_floor_cli_matches_the_attested_release_manifest() -> None:
+    cli_text = os.environ.get("DCC_MCP_TILED_CORE_FLOOR_CLI")
+    manifest_text = os.environ.get("DCC_MCP_TILED_CORE_FLOOR_MANIFEST")
+    bundle_text = os.environ.get("DCC_MCP_TILED_CORE_FLOOR_BUNDLE")
+    if not cli_text or not manifest_text or not bundle_text:
+        pytest.skip("set the official CLI, manifest, and attestation bundle paths")
+    release = install._core_cli_release()
+    assert release is not None
+    cli = Path(cli_text)
+    manifest_path = Path(manifest_text)
+    bundle_path = Path(bundle_text)
+    manifest_bytes = manifest_path.read_bytes()
+
+    assert cli.stat().st_size == release.size
+    assert hashlib.sha256(cli.read_bytes()).hexdigest() == release.sha256
+    assert hashlib.sha256(manifest_bytes).hexdigest() == release.manifest_sha256
+    assert hashlib.sha256(bundle_path.read_bytes()).hexdigest() == release.manifest_bundle_sha256
+    manifest = json.loads(manifest_bytes)
+    assert manifest["dcc-mcp-cli"] == {
+        "version": install.MIN_CORE_VERSION,
+        "url": (
+            "https://github.com/dcc-mcp/dcc-mcp-core/releases/download/"
+            "v0.20.14/%s" % release.asset_name
+        ),
+        "sha256": release.sha256,
+        "release_notes": None,
+    }
+
+
 def test_driver_missing_binds_the_official_floor_cli_to_python_core(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -247,7 +380,7 @@ def test_driver_missing_binds_the_official_floor_cli_to_python_core(
         pytest.skip("set DCC_MCP_TILED_CORE_FLOOR_CLI to the official floor binary")
     executable = tmp_path / "tiled"
     executable.write_text("placeholder", encoding="utf-8")
-    monkeypatch.setattr(install.shutil, "which", lambda _name: cli_text)
+    monkeypatch.setenv("DCC_MCP_TILED_CORE_CLI", cli_text)
     monkeypatch.setattr(
         TiledCli,
         "_default_driver_path",
@@ -267,13 +400,9 @@ def test_driver_missing_binds_the_official_floor_cli_to_python_core(
     assert report["requirements"]["core_cli_version"] == "0.20.14"
     assert report["requirements"]["core_cli_matches_python"] is True
     assert report["next_steps"][0]["command"] == [
-        "dcc-mcp-cli",
-        "install",
-        "--dcc-type",
-        "tiled",
-        "--output",
-        "json",
-        "--non-interactive",
+        "dcc-mcp-tiled-doctor",
+        "catalog-plan",
+        "--json",
     ]
 
 
@@ -292,6 +421,17 @@ def test_core_cli_floor_is_projected_into_package_docs_and_ci() -> None:
     assert "dcc-mcp-core/CLI >=%s" % floor in skill
     assert 'CORE_CLI_VERSION: "%s"' % floor in workflow
     assert "dcc-mcp-core==${CORE_CLI_VERSION}" in workflow
+    assert (
+        'CORE_CLI_MANIFEST_SHA256: "%s"'
+        % ("fae68f7d7285d5b63acfd8eb312bc5cd3b9f86ee436566809d5c086c76ce9ebf")
+        in workflow
+    )
+    assert (
+        'CORE_CLI_MANIFEST_BUNDLE_SHA256: "%s"'
+        % ("10416da17bff09a09f263ea7f9a68d665ea1859fc6f1021e0aa1a8e55a519edf")
+        in workflow
+    )
+    assert "gh attestation verify" in workflow
     assert "test_declared_core_floor_cli_executes_the_emitted_catalog_plan" in workflow
 
 
@@ -344,8 +484,8 @@ def test_verify_rejects_tiled_below_the_supported_floor(tmp_path, monkeypatch, c
         "reason": "tiled_version_below_floor",
     }
     assert report["runtime"]["version"] == "1.9.2"
-    assert report["next_steps"][0]["id"] == "select-tiled-executable"
-    assert report["next_steps"][0]["action"] == "install_tiled"
+    assert report["next_steps"] == []
+    assert report["blocker"]["reason"] == "verified_tiled_acquisition_required"
 
 
 @pytest.mark.parametrize(

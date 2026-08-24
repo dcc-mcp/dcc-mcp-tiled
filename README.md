@@ -56,6 +56,13 @@ dcc-mcp-tiled
 The deprecated `dcc-mcp-tiled-install` compatibility alias performs
 verification only and never writes an installation.
 
+When the fixed driver is unavailable, catalog planning is exposed only through
+`dcc-mcp-tiled-doctor catalog-plan --json`. That wrapper authenticates the
+exact Core 0.20.14 CLI bytes against Core's signed platform update manifest and
+rechecks the path and digest immediately before the read-only plan. Missing or
+untrusted executables return an explicit blocker instead of a placeholder or
+browser-only remediation.
+
 The adapter discovers `tiled`/`tiled.exe` from `PATH` and common Windows install
 locations. Set an explicit executable when needed:
 
