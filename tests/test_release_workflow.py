@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,23 @@ ACTION_PINS = {
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
     "softprops/action-gh-release": "3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
 }
+
+RECAPTURE_COMMAND = [
+    "python",
+    "tools/verify_release_identity.py",
+    "--repository",
+    "${GITHUB_REPOSITORY}",
+    "--tag",
+    "${EXPECTED_TAG}",
+    "--sha",
+    "${EXPECTED_SHA}",
+    "--version",
+    "${EXPECTED_VERSION}",
+    "--bundle",
+    "release-bundle",
+    "--manifest-sha256",
+    "${EXPECTED_MANIFEST_SHA256}",
+]
 
 
 def _workflow() -> dict:
@@ -39,6 +58,10 @@ def _checkout(job: dict) -> dict:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def _assert_exact_recapture_command(script: str) -> None:
+    assert shlex.split(script.replace("\\\n", " ")) == RECAPTURE_COMMAND
 
 
 def test_every_release_action_is_pinned_to_an_exact_commit() -> None:
@@ -67,6 +90,13 @@ def test_pull_requests_run_a_non_mutating_online_release_guard() -> None:
     scripts = "\n".join(step.get("run", "") for step in guard["steps"])
     assert "tests/test_release_workflow.py" in scripts
     assert "tools/verify_action_pins.py .github/workflows/release.yml" in scripts
+    assert (
+        "python -m pip install --disable-pip-version-check --only-binary=:all: "
+        "--require-hashes -r tools/release-build-requirements.txt"
+    ) in scripts.replace("\n", " ")
+    assert "python -m build --no-isolation" in scripts
+    assert "python -m twine check dist/*" in scripts
+    assert "expected-files.txt" in scripts
 
 
 def test_release_please_freezes_a_canonical_tag_to_one_commit() -> None:
@@ -153,15 +183,13 @@ def test_mutations_immediately_follow_fresh_remote_identity_recapture() -> None:
             "EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}",
             "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}",
         }
-        script = recapture["run"]
-        assert "^v[0-9]+\\.[0-9]+\\.[0-9]+$" in script
-        assert "git/ref/tags/${EXPECTED_TAG}" in script
-        assert "git/tags/${object_sha}" in script
-        assert "git rev-parse HEAD" in script
-        assert 'git rev-parse "${EXPECTED_TAG}^{commit}"' in script
-        assert ".release-please-manifest.json" in script
-        assert "EXPECTED_MANIFEST_SHA256" in script
-        assert "sha256sum --check --strict SHA256SUMS" in script
+        _assert_exact_recapture_command(recapture["run"])
+
+
+def test_mutation_guard_contract_rejects_comment_deception() -> None:
+    deceptive = "echo '# python tools/verify_release_identity.py --tag fake'"
+    with pytest.raises(AssertionError):
+        _assert_exact_recapture_command(deceptive)
 
 
 def test_release_jobs_have_least_privilege_and_pypi_is_oidc_only() -> None:

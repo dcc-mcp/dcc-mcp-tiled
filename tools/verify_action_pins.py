@@ -15,6 +15,16 @@ import yaml
 
 PIN_RE = re.compile(r"^(?P<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:/[^@]+)?@(?P<sha>[0-9a-f]{40})$")
 
+APPROVED_ACTION_PINS = {
+    "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
+    "actions/download-artifact": "634f93cb2916e3fdff6788551b99b062d0335ce0",
+    "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
+    "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+    "softprops/action-gh-release": "3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
+}
+
 
 class PinError(RuntimeError):
     """A workflow action pin is not a verified upstream commit."""
@@ -71,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
 
     pins = sorted({pin for path in args.workflows for pin in workflow_pins(path)})
     for repo, sha in pins:
+        if APPROVED_ACTION_PINS.get(repo) != sha:
+            raise PinError(f"{repo}@{sha}: pin is not in the approved action pin set")
         verify_upstream_commit(repo, sha)
         print(f"verified {repo}@{sha}")
     return 0
