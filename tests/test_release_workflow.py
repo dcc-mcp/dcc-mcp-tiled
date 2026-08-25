@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 REQUIREMENTS = ROOT / "tools" / "release-build-requirements.txt"
+VERSION_REQUIREMENTS = ROOT / "tools" / "release-version-requirements.txt"
+
+SEMANTIC_INSTALL = (
+    "python -m pip install --disable-pip-version-check --only-binary=:all: "
+    "--require-hashes -r tools/release-version-requirements.txt"
+)
 
 ACTION_PINS = {
     "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
@@ -89,6 +95,9 @@ def test_pull_requests_run_a_non_mutating_online_release_guard() -> None:
     assert "id-token" not in guard["permissions"]
     scripts = "\n".join(step.get("run", "") for step in guard["steps"])
     assert "tests/test_release_workflow.py" in scripts
+    assert "tests/test_version_consistency.py" in scripts
+    assert "python tools/verify_version_consistency.py" in scripts
+    assert SEMANTIC_INSTALL in scripts.replace("\n", " ")
     assert "tools/verify_action_pins.py .github/workflows/release.yml" in scripts
     assert (
         "python -m pip install --disable-pip-version-check --only-binary=:all: "
@@ -134,6 +143,10 @@ def test_every_release_consumer_rechecks_head_tag_sha_version_and_artifacts() ->
             "fetch-depth": "0",
         }
         verify = _step(job, "Verify immutable release target")
+        verify_index = job["steps"].index(verify)
+        semantic_install = job["steps"][verify_index - 1]
+        assert semantic_install["name"] == "Install the semantic version verifier"
+        assert SEMANTIC_INSTALL in semantic_install["run"].replace("\n", " ")
         assert verify["env"] == {
             "EXPECTED_TAG": "${{ needs.release-please.outputs.tag_name }}",
             "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
@@ -142,9 +155,12 @@ def test_every_release_consumer_rechecks_head_tag_sha_version_and_artifacts() ->
         script = verify["run"]
         assert "git rev-parse HEAD" in script
         assert 'git rev-parse "${EXPECTED_TAG}^{commit}"' in script
-        assert ".release-please-manifest.json" in script
-        assert "pyproject.toml" in script
-        assert "src/dcc_mcp_tiled/__version__.py" in script
+        assert 'python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"' in script
+
+    assert VERSION_REQUIREMENTS.read_text(encoding="utf-8") == (
+        "pyyaml==6.0.3 \\\n"
+        "    --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc\n"
+    )
 
     for name in ("publish", "attach-release-assets"):
         assert "build" in jobs[name]["needs"]
