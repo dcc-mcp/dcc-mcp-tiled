@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.4.1](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.0...v0.4.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* keep release versions synchronized ([e7fcada](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/e7fcada880520472eed54b1852c8f8c273bf7b6e))
+* make release contract tests version agnostic ([a2b1069](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/a2b10690779af6756a98c54af4cebd115778bc94))
+
 ## [0.4.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.3.0...v0.4.0) (2026-08-24)
 
 
