@@ -15,6 +15,17 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.verify_version_consistency import (
+        VersionConsistencyError,
+        verify_version_consistency,
+    )
+except ModuleNotFoundError:  # Direct execution places tools/ at sys.path[0].
+    from verify_version_consistency import (  # type: ignore[no-redef]
+        VersionConsistencyError,
+        verify_version_consistency,
+    )
+
 SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -103,30 +114,10 @@ def _git(*args: str) -> str:
 
 
 def verify_versions(version: str) -> None:
-    manifest = json.loads(Path(".release-please-manifest.json").read_text(encoding="utf-8"))["."]
-    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
-    project_section = re.search(r"(?ms)^\[project\]\s*$\n(.*?)(?=^\[|\Z)", pyproject)
-    project_match = (
-        re.search(
-            r'^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$',
-            project_section.group(1),
-            re.MULTILINE,
-        )
-        if project_section is not None
-        else None
-    )
-    source = Path("src/dcc_mcp_tiled/__version__.py").read_text(encoding="utf-8")
-    source_match = re.search(r'^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"', source, re.MULTILINE)
-    skill = Path("src/dcc_mcp_tiled/skills/tiled-maps/SKILL.md").read_text(encoding="utf-8")
-    if (
-        source_match is None
-        or project_match is None
-        or manifest != version
-        or project_match.group(1) != version
-        or source_match.group(1) != version
-        or f"version: {version}" not in skill
-    ):
-        raise IdentityError("checked-out release versions changed")
+    try:
+        verify_version_consistency(Path.cwd(), expected=version)
+    except VersionConsistencyError as exc:
+        raise IdentityError("checked-out release versions changed") from exc
 
 
 def _remote_fetch(repository: str, token: str) -> Callable[[str], dict[str, Any]]:
