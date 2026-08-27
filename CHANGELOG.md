@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## [0.4.2](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.1...v0.4.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* bind release package and artifact identity ([412475d](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/412475d37ecc64847396817a1f3582a339180bfc))
+* harden release asset publication ([827a2f8](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/827a2f86f7a4ff8a6948e1a93aa9e390f56e349f))
+* prevent release asset overwrites ([68ac05d](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/68ac05df5f56027f4e32dc6738ce0ea7eea7e6f4))
+* reject nonportable release archive paths ([5003fd6](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/5003fd6dcfe2eb7fa9c3c1bee17724290c9e194a))
+* revalidate release publication identity ([249edfa](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/249edfa3f6cd656e56446d1ec3507f59abb2a6c8))
+
 ## [0.4.1](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.0...v0.4.1) (2026-08-25)
 
 
