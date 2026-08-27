@@ -22,6 +22,9 @@ jobs:
       tag_name: ${{ steps.target.outputs.tag_name }}
       tag_sha: ${{ steps.target.outputs.tag_sha }}
       version: ${{ steps.target.outputs.version }}
+      release_id: ${{ steps.release-identity.outputs.release_id }}
+      release_node_id: ${{ steps.release-identity.outputs.release_node_id }}
+      release_assets_sha256: ${{ steps.release-identity.outputs.release_assets_sha256 }}
     steps:
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5 commit
@@ -69,6 +72,56 @@ jobs:
           echo "tag_name=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "tag_sha=$object_sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Check out the exact release target
+        id: checkout-release
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.target.outputs.tag_name }}
+          fetch-depth: 0
+      - name: Set up Python for the release identity guard
+        id: setup-python
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the semantic version verifier
+        id: install-version-verifier
+        if: steps.release.outputs.release_created == 'true'
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-version-requirements.txt
+      - name: Verify immutable release target
+        id: verify-target
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          EXPECTED_TAG: ${{ steps.target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ steps.target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ steps.target.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "${EXPECTED_TAG}^{commit}")"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" || "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Checked-out release identity does not match the frozen tag commit." >&2
+            exit 1
+          fi
+          python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Freeze the exact GitHub Release entity and asset baseline
+        id: release-identity
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ steps.target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ steps.target.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/freeze_release_identity.py
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --github-output "${GITHUB_OUTPUT}"
 
   build:
     needs: release-please
@@ -79,18 +132,22 @@ jobs:
     outputs:
       bundle_manifest_sha256: ${{ steps.bundle-identity.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - id: checkout-release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - id: setup-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - name: Install the semantic version verifier
+        id: install-version-verifier
         run: >-
           python -m pip install --disable-pip-version-check --only-binary=:all:
           --require-hashes -r tools/release-version-requirements.txt
       - name: Verify immutable release target
+        id: verify-target
         env:
           EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
           EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
@@ -106,10 +163,12 @@ jobs:
           fi
           python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
       - name: Install reviewed build toolchain
+        id: install-build-toolchain
         run: >-
           python -m pip install --disable-pip-version-check --only-binary=:all:
           --require-hashes -r tools/release-build-requirements.txt
       - name: Build and validate distributions
+        id: build-bundle
         run: |
           set -euo pipefail
           python -m build --no-isolation
@@ -128,6 +187,7 @@ jobs:
           [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
       - name: Upload immutable release bundle
+        id: upload-bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-bundle
@@ -147,18 +207,22 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - id: checkout-release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - id: setup-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - name: Install the semantic version verifier
+        id: install-version-verifier
         run: >-
           python -m pip install --disable-pip-version-check --only-binary=:all:
           --require-hashes -r tools/release-version-requirements.txt
       - name: Verify immutable release target
+        id: verify-target
         env:
           EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
           EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
@@ -174,11 +238,13 @@ jobs:
           fi
           python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
       - name: Download immutable release bundle
+        id: download-bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-bundle
           path: release-bundle
       - name: Verify release artifacts
+        id: verify-bundle
         env:
           EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.bundle_manifest_sha256 }}
         shell: bash
@@ -193,12 +259,16 @@ jobs:
           test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
           test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
       - name: Recapture remote release identity immediately before mutation
+        id: recapture-release
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
           EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
           EXPECTED_VERSION: ${{ needs.release-please.outputs.version }}
           EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.release-please.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.release-please.outputs.release_assets_sha256 }}
         shell: bash
         run: >-
           python tools/verify_release_identity.py
@@ -208,7 +278,11 @@ jobs:
           --version "${EXPECTED_VERSION}"
           --bundle release-bundle
           --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"
       - name: Publish to PyPI with trusted publishing
+        id: publish-pypi
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1.14
         with:
           packages-dir: release-bundle/dist
@@ -217,23 +291,29 @@ jobs:
 
   attach-release-assets:
     needs: [release-please, build, publish]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - id: checkout-release
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
           fetch-depth: 0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      - id: setup-python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
       - name: Install the semantic version verifier
+        id: install-version-verifier
         run: >-
           python -m pip install --disable-pip-version-check --only-binary=:all:
           --require-hashes -r tools/release-version-requirements.txt
       - name: Verify immutable release target
+        id: verify-target
         env:
           EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
           EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
@@ -249,11 +329,13 @@ jobs:
           fi
           python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
       - name: Download immutable release bundle
+        id: download-bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-bundle
           path: release-bundle
       - name: Verify release artifacts
+        id: verify-bundle
         env:
           EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.bundle_manifest_sha256 }}
         shell: bash
@@ -268,12 +350,16 @@ jobs:
           test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
           test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
       - name: Recapture remote release identity immediately before mutation
+        id: recapture-release
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
           EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
           EXPECTED_VERSION: ${{ needs.release-please.outputs.version }}
           EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.release-please.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.release-please.outputs.release_assets_sha256 }}
         shell: bash
         run: >-
           python tools/verify_release_identity.py
@@ -283,11 +369,29 @@ jobs:
           --version "${EXPECTED_VERSION}"
           --bundle release-bundle
           --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
-      - name: Attach verified assets to release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-          overwrite_files: false
-          files: |
-            release-bundle/dist/*
-            release-bundle/SHA256SUMS
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"
+      - name: Attach the exact verified assets to the frozen release
+        id: upload-release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.release-please.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.release-please.outputs.version }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.release-please.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.release-please.outputs.release_assets_sha256 }}
+        shell: bash
+        run: >-
+          python tools/upload_release_assets.py
+          --repository "${GITHUB_REPOSITORY}"
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --version "${EXPECTED_VERSION}"
+          --bundle release-bundle
+          --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"

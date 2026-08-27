@@ -22,7 +22,6 @@ APPROVED_ACTION_PINS = {
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
-    "softprops/action-gh-release": "3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
 }
 
 
