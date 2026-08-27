@@ -28,6 +28,7 @@ try:
         asset_baseline_sha256,
         capture_release_snapshot,
         parse_asset_identity,
+        resolve_remote_tag,
         verify_bundle,
         verify_release_snapshot,
     )
@@ -44,6 +45,7 @@ except ModuleNotFoundError:  # Direct execution places tools/ at sys.path[0].
         asset_baseline_sha256,
         capture_release_snapshot,
         parse_asset_identity,
+        resolve_remote_tag,
         verify_bundle,
         verify_release_snapshot,
     )
@@ -171,12 +173,16 @@ def apply_release_assets(
     observe: Callable[[], ReleaseSnapshot],
     upload: Callable[[PlannedAsset], AssetIdentity],
     delete: Callable[[int], None],
+    verify_tag: Callable[[], None],
 ) -> ReleaseSnapshot:
     ordered = tuple(sorted(planned, key=lambda item: item.name))
     _preflight(frozen, ordered, observe())
+    verify_tag()
     uploaded: list[AssetIdentity] = []
     try:
-        for asset in ordered:
+        for index, asset in enumerate(ordered):
+            if index:
+                verify_tag()
             result = upload(asset)
             _verify_uploaded(result, asset)
             uploaded.append(result)
@@ -185,6 +191,7 @@ def apply_release_assets(
         expected = tuple(sorted(uploaded, key=lambda item: item.name))
         if final.assets != expected or final.assets_sha256 != asset_baseline_sha256(expected):
             raise ReleaseAssetError("final release asset set is incomplete or changed")
+        verify_tag()
     except Exception as exc:
         _rollback(uploaded, frozen=frozen, observe=observe, delete=delete, cause=exc)
     return final
@@ -274,12 +281,22 @@ def main(argv: list[str] | None = None) -> int:
     except IdentityError as exc:
         raise ReleaseAssetError(str(exc)) from exc
     upload, delete = _github_mutations(args.repository, args.release_id, token)
+
+    def verify_tag() -> None:
+        try:
+            observed_sha = resolve_remote_tag(args.tag, fetch=fetch)
+        except IdentityError as exc:
+            raise ReleaseAssetError(str(exc)) from exc
+        if observed_sha != args.sha:
+            raise ReleaseAssetError("remote release tag changed")
+
     final = apply_release_assets(
         frozen=frozen,
         planned=plan_release_assets(args.bundle, args.version),
         observe=lambda: capture_release_snapshot(args.release_id, fetch=fetch),
         upload=upload,
         delete=delete,
+        verify_tag=verify_tag,
     )
     print(f"attached {len(final.assets)} exact release assets to release {final.release_id}")
     return 0

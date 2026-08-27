@@ -330,6 +330,91 @@ def test_release_workflow_guard_rejects_decoys_reordering_and_extra_mutation(mut
         _workflow_guard().verify_workflow(workflow)
 
 
+def _release_checkout(workflow: dict) -> dict:
+    return next(
+        step
+        for step in workflow["jobs"]["release-please"]["steps"]
+        if step.get("id") == "checkout-release"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda workflow: _release_checkout(workflow)["with"].__setitem__(
+                "repository", "unreviewed/other-repository"
+            ),
+            id="checkout-repository",
+        ),
+        pytest.param(
+            lambda workflow: _release_checkout(workflow)["with"].__setitem__(
+                "token", "${{ secrets.UNREVIEWED_CHECKOUT_TOKEN }}"
+            ),
+            id="checkout-token",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["build"].__setitem__(
+                "env", {"UNREVIEWED": "${{ secrets.UNREVIEWED_JOB_SECRET }}"}
+            ),
+            id="job-secret-env",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["publish"].__setitem__("runs-on", "self-hosted"),
+            id="runner",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["publish"]["permissions"].__setitem__(
+                "packages", "write"
+            ),
+            id="job-permissions",
+        ),
+        pytest.param(
+            lambda workflow: workflow["permissions"].__setitem__("actions", "write"),
+            id="workflow-permissions",
+        ),
+        pytest.param(
+            lambda workflow: workflow["on"]["push"]["branches"].append("unreviewed"),
+            id="trigger",
+        ),
+        pytest.param(
+            lambda workflow: workflow["concurrency"].__setitem__("cancel-in-progress", "true"),
+            id="concurrency",
+        ),
+        pytest.param(
+            lambda workflow: workflow.__setitem__(
+                "defaults", {"run": {"shell": "unreviewed-shell"}}
+            ),
+            id="workflow-defaults",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["build"].__setitem__(
+                "services", {"unreviewed": {"image": "unreviewed:latest"}}
+            ),
+            id="services",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["publish"].__setitem__(
+                "container", {"image": "unreviewed:latest"}
+            ),
+            id="container",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["attach-release-assets"].__setitem__(
+                "defaults", {"run": {"working-directory": "unreviewed"}}
+            ),
+            id="job-defaults",
+        ),
+    ],
+)
+def test_release_workflow_guard_rejects_unknown_security_shape(mutate) -> None:
+    workflow = copy.deepcopy(_workflow())
+    mutate(workflow)
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
+
+
 def test_build_toolchain_is_hash_locked() -> None:
     workflow = _workflow()
     install = _step(workflow["jobs"]["build"], "Install reviewed build toolchain")

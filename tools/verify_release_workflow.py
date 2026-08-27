@@ -128,6 +128,171 @@ RELEASE_OUTPUTS = {
     "release_assets_sha256": "${{ steps.release-identity.outputs.release_assets_sha256 }}",
 }
 
+WORKFLOW_METADATA = {
+    "name": "Release",
+    "on": {"push": {"branches": ["main"]}},
+    "concurrency": {
+        "group": "${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "false",
+    },
+    "permissions": {"contents": "read"},
+}
+
+JOB_METADATA = {
+    "release-please": {
+        "runs-on": "ubuntu-latest",
+        "permissions": {"contents": "write", "pull-requests": "write"},
+        "outputs": RELEASE_OUTPUTS,
+    },
+    "build": {
+        "needs": "release-please",
+        "if": "needs.release-please.outputs.release_created == 'true'",
+        "runs-on": "ubuntu-latest",
+        "permissions": {"contents": "read"},
+        "outputs": {"bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}"},
+    },
+    "publish": {
+        "needs": ["release-please", "build"],
+        "if": "needs.release-please.outputs.release_created == 'true'",
+        "runs-on": "ubuntu-latest",
+        "environment": {
+            "name": "pypi",
+            "url": "https://pypi.org/p/dcc-mcp-tiled",
+        },
+        "permissions": {"contents": "read", "id-token": "write"},
+    },
+    "attach-release-assets": {
+        "needs": ["release-please", "build", "publish"],
+        "if": (
+            "needs.release-please.outputs.release_created == 'true' "
+            "&& needs.publish.result == 'success'"
+        ),
+        "runs-on": "ubuntu-latest",
+        "permissions": {"contents": "write"},
+    },
+}
+
+STEP_NAMES = {
+    ("release-please", "target"): "Resolve immutable release target",
+    ("release-please", "checkout-release"): "Check out the exact release target",
+    ("release-please", "setup-python"): "Set up Python for the release identity guard",
+    ("release-please", "install-version-verifier"): ("Install the semantic version verifier"),
+    ("release-please", "verify-target"): "Verify immutable release target",
+    ("release-please", "release-identity"): (
+        "Freeze the exact GitHub Release entity and asset baseline"
+    ),
+    ("build", "install-version-verifier"): "Install the semantic version verifier",
+    ("build", "verify-target"): "Verify immutable release target",
+    ("build", "install-build-toolchain"): "Install reviewed build toolchain",
+    ("build", "build-bundle"): "Build and validate distributions",
+    ("build", "bundle-identity"): "Freeze release bundle identity",
+    ("build", "upload-bundle"): "Upload immutable release bundle",
+    ("publish", "install-version-verifier"): "Install the semantic version verifier",
+    ("publish", "verify-target"): "Verify immutable release target",
+    ("publish", "download-bundle"): "Download immutable release bundle",
+    ("publish", "verify-bundle"): "Verify release artifacts",
+    ("publish", "recapture-release"): (
+        "Recapture remote release identity immediately before mutation"
+    ),
+    ("publish", "publish-pypi"): "Publish to PyPI with trusted publishing",
+    ("attach-release-assets", "install-version-verifier"): (
+        "Install the semantic version verifier"
+    ),
+    ("attach-release-assets", "verify-target"): "Verify immutable release target",
+    ("attach-release-assets", "download-bundle"): "Download immutable release bundle",
+    ("attach-release-assets", "verify-bundle"): "Verify release artifacts",
+    ("attach-release-assets", "recapture-release"): (
+        "Recapture remote release identity immediately before mutation"
+    ),
+    ("attach-release-assets", "upload-release-assets"): (
+        "Attach the exact verified assets to the frozen release"
+    ),
+}
+
+ACTION_NAMES = {
+    ("release-please", "release"): "googleapis/release-please-action",
+    ("release-please", "checkout-release"): "actions/checkout",
+    ("release-please", "setup-python"): "actions/setup-python",
+    ("build", "checkout-release"): "actions/checkout",
+    ("build", "setup-python"): "actions/setup-python",
+    ("build", "upload-bundle"): "actions/upload-artifact",
+    ("publish", "checkout-release"): "actions/checkout",
+    ("publish", "setup-python"): "actions/setup-python",
+    ("publish", "download-bundle"): "actions/download-artifact",
+    ("publish", "publish-pypi"): "pypa/gh-action-pypi-publish",
+    ("attach-release-assets", "checkout-release"): "actions/checkout",
+    ("attach-release-assets", "setup-python"): "actions/setup-python",
+    ("attach-release-assets", "download-bundle"): "actions/download-artifact",
+}
+
+NEEDS_CHECKOUT = {
+    "ref": "${{ needs.release-please.outputs.tag_name }}",
+    "fetch-depth": "0",
+}
+ACTION_INPUTS = {
+    ("release-please", "release"): {
+        "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
+        "config-file": "release-please-config.json",
+        "manifest-file": ".release-please-manifest.json",
+    },
+    ("release-please", "checkout-release"): {
+        "ref": "${{ steps.target.outputs.tag_name }}",
+        "fetch-depth": "0",
+    },
+    ("release-please", "setup-python"): {"python-version": "3.12"},
+    ("build", "checkout-release"): NEEDS_CHECKOUT,
+    ("build", "setup-python"): {"python-version": "3.12"},
+    ("build", "upload-bundle"): {
+        "name": "release-bundle",
+        "path": "release-bundle/",
+        "if-no-files-found": "error",
+        "compression-level": "0",
+        "retention-days": "7",
+    },
+    ("publish", "checkout-release"): NEEDS_CHECKOUT,
+    ("publish", "setup-python"): {"python-version": "3.12"},
+    ("publish", "download-bundle"): {
+        "name": "release-bundle",
+        "path": "release-bundle",
+    },
+    ("publish", "publish-pypi"): {
+        "packages-dir": "release-bundle/dist",
+        "verbose": "true",
+        "print-hash": "true",
+    },
+    ("attach-release-assets", "checkout-release"): NEEDS_CHECKOUT,
+    ("attach-release-assets", "setup-python"): {"python-version": "3.12"},
+    ("attach-release-assets", "download-bundle"): {
+        "name": "release-bundle",
+        "path": "release-bundle",
+    },
+}
+
+NEEDS_TARGET_ENV = {
+    "EXPECTED_TAG": "${{ needs.release-please.outputs.tag_name }}",
+    "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
+    "EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}",
+}
+STEP_SHELLS = {
+    ("release-please", "target"),
+    ("release-please", "verify-target"),
+    ("release-please", "release-identity"),
+    ("build", "verify-target"),
+    ("build", "bundle-identity"),
+    ("publish", "verify-target"),
+    ("publish", "verify-bundle"),
+    ("publish", "recapture-release"),
+    ("attach-release-assets", "verify-target"),
+    ("attach-release-assets", "verify-bundle"),
+    ("attach-release-assets", "recapture-release"),
+    ("attach-release-assets", "upload-release-assets"),
+}
+
+RELEASE_CONDITION = "steps.release.outputs.release_created == 'true'"
+STEP_CONDITIONS = {
+    ("release-please", step_id): RELEASE_CONDITION for step_id in STEP_IDS["release-please"][1:]
+}
+
 RECAPTURE_ENV = {
     "GH_TOKEN": "${{ github.token }}",
     "EXPECTED_TAG": "${{ needs.release-please.outputs.tag_name }}",
@@ -171,6 +336,36 @@ UPLOAD_ENV = {
     "EXPECTED_RELEASE_ID": "${{ needs.release-please.outputs.release_id }}",
     "EXPECTED_RELEASE_NODE_ID": "${{ needs.release-please.outputs.release_node_id }}",
     "EXPECTED_RELEASE_ASSETS_SHA256": ("${{ needs.release-please.outputs.release_assets_sha256 }}"),
+}
+
+STEP_ENVS = {
+    ("release-please", "target"): {
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_TAG": "${{ steps.release.outputs.tag_name }}",
+        "RELEASE_VERSION": "${{ steps.release.outputs.version }}",
+    },
+    ("release-please", "verify-target"): {
+        "EXPECTED_TAG": "${{ steps.target.outputs.tag_name }}",
+        "EXPECTED_SHA": "${{ steps.target.outputs.tag_sha }}",
+        "EXPECTED_VERSION": "${{ steps.target.outputs.version }}",
+    },
+    ("release-please", "release-identity"): {
+        "GH_TOKEN": "${{ github.token }}",
+        "EXPECTED_TAG": "${{ steps.target.outputs.tag_name }}",
+        "EXPECTED_SHA": "${{ steps.target.outputs.tag_sha }}",
+    },
+    ("build", "verify-target"): NEEDS_TARGET_ENV,
+    ("publish", "verify-target"): NEEDS_TARGET_ENV,
+    ("publish", "verify-bundle"): {
+        "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}"
+    },
+    ("publish", "recapture-release"): RECAPTURE_ENV,
+    ("attach-release-assets", "verify-target"): NEEDS_TARGET_ENV,
+    ("attach-release-assets", "verify-bundle"): {
+        "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}"
+    },
+    ("attach-release-assets", "recapture-release"): RECAPTURE_ENV,
+    ("attach-release-assets", "upload-release-assets"): UPLOAD_ENV,
 }
 
 UPLOAD_COMMAND = [
@@ -236,6 +431,83 @@ def _step_by_id(steps: list[dict[str, Any]], step_id: str) -> dict[str, Any]:
     return next(step for step in steps if step["id"] == step_id)
 
 
+def _verify_complete_shape(
+    workflow: dict[str, Any],
+    jobs: dict[str, Any],
+    steps: dict[str, list[dict[str, Any]]],
+) -> None:
+    _require(
+        set(workflow) == {*WORKFLOW_METADATA, "jobs"},
+        "release workflow top-level shape changed",
+    )
+    for key, expected in WORKFLOW_METADATA.items():
+        _require(workflow.get(key) == expected, f"release workflow {key} changed")
+
+    _require(set(JOB_METADATA) == set(jobs), "release job contract is incomplete")
+    for job_name, expected_metadata in JOB_METADATA.items():
+        job = jobs[job_name]
+        _require(
+            set(job) == {*expected_metadata, "steps"},
+            f"{job_name} job shape changed",
+        )
+        observed_metadata = {key: value for key, value in job.items() if key != "steps"}
+        _require(observed_metadata == expected_metadata, f"{job_name} job controls changed")
+
+    all_steps = {
+        (job_name, step["id"]) for job_name, job_steps in steps.items() for step in job_steps
+    }
+    _require(
+        set(ACTION_NAMES) == set(ACTION_INPUTS),
+        "release action input contract is incomplete",
+    )
+    _require(
+        all_steps == set(ACTION_NAMES) | set(RUN_SHA256),
+        "release executable step contract is incomplete",
+    )
+
+    for job_name, job_steps in steps.items():
+        for step in job_steps:
+            key = (job_name, step["id"])
+            is_action = key in ACTION_NAMES
+            is_command = key in RUN_SHA256
+            _require(is_action != is_command, f"{job_name}/{step['id']} execution is ambiguous")
+
+            expected_keys = {"id", "uses", "with"} if is_action else {"id", "run"}
+            if key in STEP_NAMES:
+                expected_keys.add("name")
+            if key in STEP_ENVS:
+                expected_keys.add("env")
+            if key in STEP_SHELLS:
+                expected_keys.add("shell")
+            if key in STEP_CONDITIONS:
+                expected_keys.add("if")
+            _require(set(step) == expected_keys, f"{job_name}/{step['id']} shape changed")
+
+            if key in STEP_NAMES:
+                _require(
+                    step.get("name") == STEP_NAMES[key], f"{job_name}/{step['id']} name changed"
+                )
+            if is_action:
+                action = ACTION_NAMES[key]
+                _require(
+                    step.get("uses") == f"{action}@{ACTION_PINS[action]}",
+                    f"{job_name}/{step['id']} action changed",
+                )
+                _require(
+                    step.get("with") == ACTION_INPUTS[key],
+                    f"{job_name}/{step['id']} action inputs changed",
+                )
+            if key in STEP_ENVS:
+                _require(step.get("env") == STEP_ENVS[key], f"{job_name}/{step['id']} env changed")
+            if key in STEP_SHELLS:
+                _require(step.get("shell") == "bash", f"{job_name}/{step['id']} shell changed")
+            if key in STEP_CONDITIONS:
+                _require(
+                    step.get("if") == STEP_CONDITIONS[key],
+                    f"{job_name}/{step['id']} condition changed",
+                )
+
+
 def _verify_action_pins(jobs: dict[str, Any]) -> None:
     seen: list[str] = []
     for job in jobs.values():
@@ -291,6 +563,7 @@ def verify_workflow(workflow: dict[str, Any]) -> None:
     _require(list(jobs) == list(STEP_IDS), "release job set or order changed")
     typed_jobs = dict(jobs)
     steps = {name: _steps(typed_jobs[name], name) for name in STEP_IDS}
+    _verify_complete_shape(workflow, typed_jobs, steps)
 
     release = typed_jobs["release-please"]
     _require(release.get("outputs") == RELEASE_OUTPUTS, "frozen release outputs changed")
