@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -26,8 +29,18 @@ def _bundle(tmp_path: Path) -> Path:
     dist.mkdir(parents=True)
     wheel = dist / "dcc_mcp_tiled-0.4.0-py3-none-any.whl"
     sdist = dist / "dcc_mcp_tiled-0.4.0.tar.gz"
-    wheel.write_bytes(b"wheel")
-    sdist.write_bytes(b"sdist")
+    metadata = b"Metadata-Version: 2.4\nName: dcc-mcp-tiled\nVersion: 0.4.0\n"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("dcc_mcp_tiled/__init__.py", "")
+        archive.writestr("dcc_mcp_tiled-0.4.0.dist-info/METADATA", metadata)
+    with tarfile.open(sdist, "w:gz") as archive:
+        for name, payload in (
+            ("dcc_mcp_tiled-0.4.0/PKG-INFO", metadata),
+            ("dcc_mcp_tiled-0.4.0/pyproject.toml", b"[project]\n"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
     (bundle / "SHA256SUMS").write_text(
         f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  dist/{wheel.name}\n"
         f"{hashlib.sha256(sdist.read_bytes()).hexdigest()}  dist/{sdist.name}\n",

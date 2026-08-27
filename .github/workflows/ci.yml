@@ -23,6 +23,7 @@ jobs:
           python tools/verify_release_workflow.py .github/workflows/release.yml
           python -m pytest -q \
             tests/test_release_workflow.py \
+            tests/test_workflow_artifact.py \
             tests/test_action_pin_guard.py \
             tests/test_release_identity.py \
             tests/test_release_assets.py \
@@ -42,8 +43,9 @@ jobs:
           set -euo pipefail
           rm -rf dist
           python -m build --no-isolation
-          python -m twine check dist/*
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          python tools/verify_package_artifacts.py --dist dist --version "$version"
+          python -m twine check dist/*
           printf '%s\n' \
             "dist/dcc_mcp_tiled-${version}-py3-none-any.whl" \
             "dist/dcc_mcp_tiled-${version}.tar.gz" \

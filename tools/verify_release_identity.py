@@ -17,6 +17,17 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from tools.verify_package_artifacts import (
+        PackageValidationError,
+        validate_distribution_archives,
+    )
+except ModuleNotFoundError:  # Direct execution places tools/ at sys.path[0].
+    from verify_package_artifacts import (  # type: ignore[no-redef]
+        PackageValidationError,
+        validate_distribution_archives,
+    )
+
+try:
     from tools.verify_version_consistency import (
         VersionConsistencyError,
         verify_version_consistency,
@@ -132,6 +143,10 @@ def verify_bundle(bundle: Path, version: str, manifest_sha256: str) -> None:
         artifact = dist / name
         if artifact.stat().st_size <= 0 or _sha256(artifact) != digest:
             raise IdentityError("release artifact identity changed")
+    try:
+        validate_distribution_archives(dist, version)
+    except PackageValidationError as exc:
+        raise IdentityError("package archive validation failed") from exc
 
 
 def _required_int(payload: dict[str, Any], key: str) -> int:

@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
+import random
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +25,55 @@ def _module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _package_bundle(
+    tmp_path: Path,
+    *,
+    project: str = "dcc-mcp-tiled",
+    metadata_version: str = "0.4.0",
+    metadata_headers: bytes = b"",
+    wheel_extra: tuple[tuple[str, bytes], ...] = (),
+    sdist_extra: tuple[tuple[str, bytes, bytes], ...] = (),
+) -> tuple[Path, str]:
+    bundle = tmp_path / "bundle"
+    dist = bundle / "dist"
+    dist.mkdir(parents=True)
+    wheel = dist / "dcc_mcp_tiled-0.4.0-py3-none-any.whl"
+    sdist = dist / "dcc_mcp_tiled-0.4.0.tar.gz"
+    metadata = (
+        (f"Metadata-Version: 2.4\nName: {project}\nVersion: {metadata_version}\n").encode()
+        + metadata_headers
+        + b"\n"
+    )
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("dcc_mcp_tiled/__init__.py", "")
+        archive.writestr("dcc_mcp_tiled-0.4.0.dist-info/METADATA", metadata)
+        for name, payload in wheel_extra:
+            archive.writestr(name, payload)
+    with tarfile.open(sdist, "w:gz") as archive:
+        for name, payload in (
+            ("dcc_mcp_tiled-0.4.0/PKG-INFO", metadata),
+            ("dcc_mcp_tiled-0.4.0/pyproject.toml", b"[project]\n"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        for name, payload, member_type in sdist_extra:
+            info = tarfile.TarInfo(name)
+            info.type = member_type
+            info.size = len(payload) if member_type == tarfile.REGTYPE else 0
+            archive.addfile(info, io.BytesIO(payload) if info.size else None)
+    artifacts = (wheel, sdist)
+    manifest = bundle / "SHA256SUMS"
+    manifest.write_text(
+        "".join(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  dist/{path.name}\n"
+            for path in artifacts
+        ),
+        encoding="utf-8",
+    )
+    return bundle, hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
 def test_remote_resolver_is_bounded_and_peels_annotated_tags() -> None:
@@ -40,7 +93,7 @@ def test_remote_resolver_is_bounded_and_peels_annotated_tags() -> None:
     assert seen == ["git/ref/tags/v0.4.0", f"git/tags/{'b' * 40}"]
 
 
-def test_bundle_verifier_requires_exact_artifact_set_and_hashes(tmp_path: Path) -> None:
+def test_bundle_verifier_rejects_digest_consistent_invalid_archives(tmp_path: Path) -> None:
     module = _module()
     bundle = tmp_path / "bundle"
     dist = bundle / "dist"
@@ -58,9 +111,167 @@ def test_bundle_verifier_requires_exact_artifact_set_and_hashes(tmp_path: Path) 
     manifest.write_text(sums, encoding="utf-8")
     manifest_sha = hashlib.sha256(manifest.read_bytes()).hexdigest()
 
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+def test_bundle_verifier_rejects_wrong_internal_project(tmp_path: Path) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle(tmp_path, project="unrelated-project")
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+def test_bundle_verifier_accepts_canonical_package_archives(tmp_path: Path) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle(tmp_path)
+
     module.verify_bundle(bundle, "0.4.0", manifest_sha)
-    (dist / "unexpected.txt").write_text("unexpected", encoding="utf-8")
-    with pytest.raises(module.IdentityError, match="exactly"):
+
+
+def test_bundle_verifier_rejects_wrong_internal_version(tmp_path: Path) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle(tmp_path, metadata_version="9.9.9")
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+def test_bundle_verifier_rejects_ambiguous_package_metadata(tmp_path: Path) -> None:
+    module = _module()
+    metadata = b"Metadata-Version: 2.4\nName: dcc-mcp-tiled\nVersion: 0.4.0\n"
+    bundle, manifest_sha = _package_bundle(
+        tmp_path,
+        wheel_extra=(("decoy-0.4.0.dist-info/METADATA", metadata),),
+        sdist_extra=(("dcc_mcp_tiled-0.4.0/nested/PKG-INFO", metadata, tarfile.REGTYPE),),
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+def test_bundle_verifier_rejects_invalid_duplicate_metadata_headers(tmp_path: Path) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle(
+        tmp_path,
+        metadata_headers=b"Name: dcc-mcp-tiled\nVersion: 0.4.0\n",
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+def test_bundle_verifier_rejects_duplicate_archive_members(
+    tmp_path: Path, archive_kind: str
+) -> None:
+    module = _module()
+    if archive_kind == "wheel":
+        with pytest.warns(UserWarning, match="Duplicate name"):
+            bundle, manifest_sha = _package_bundle(
+                tmp_path,
+                wheel_extra=(("dcc_mcp_tiled/__init__.py", b"duplicate"),),
+            )
+    else:
+        bundle, manifest_sha = _package_bundle(
+            tmp_path,
+            sdist_extra=(("dcc_mcp_tiled-0.4.0/pyproject.toml", b"duplicate", tarfile.REGTYPE),),
+        )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize(
+    ("wheel_extra", "sdist_extra"),
+    [
+        ((("../escape.py", b"unsafe"),), ()),
+        ((), (("other-root/escape.py", b"unsafe", tarfile.REGTYPE),)),
+        (
+            (),
+            (("dcc_mcp_tiled-0.4.0/link", b"", tarfile.SYMTYPE),),
+        ),
+    ],
+)
+def test_bundle_verifier_rejects_unsafe_archive_members(
+    tmp_path: Path,
+    wheel_extra,
+    sdist_extra,
+) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle(
+        tmp_path,
+        wheel_extra=wheel_extra,
+        sdist_extra=sdist_extra,
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+def test_bundle_verifier_rejects_oversized_package_metadata(tmp_path: Path) -> None:
+    module = _module()
+    padding = b"X-Padding: " + (b"x" * 64) + b"\n"
+    bundle, manifest_sha = _package_bundle(tmp_path, metadata_headers=padding * 1024)
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+def test_bundle_verifier_rejects_excessive_archive_members(
+    tmp_path: Path, archive_kind: str
+) -> None:
+    module = _module()
+    if archive_kind == "wheel":
+        wheel_extra = tuple((f"dcc_mcp_tiled/data/{index}.txt", b"") for index in range(255))
+        sdist_extra = ()
+    else:
+        wheel_extra = ()
+        sdist_extra = tuple(
+            (f"dcc_mcp_tiled-0.4.0/data/{index}.txt", b"", tarfile.REGTYPE) for index in range(255)
+        )
+    bundle, manifest_sha = _package_bundle(
+        tmp_path,
+        wheel_extra=wheel_extra,
+        sdist_extra=sdist_extra,
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["wheel-member", "sdist-member", "wheel-ratio", "sdist-ratio", "wheel-total"],
+)
+def test_bundle_verifier_enforces_archive_resource_bounds(tmp_path: Path, case: str) -> None:
+    module = _module()
+    wheel_extra = ()
+    sdist_extra = ()
+    if case.endswith("member"):
+        payload = b"x" * ((4 * 1024 * 1024) + 1)
+    elif case.endswith("ratio"):
+        payload = b"x" * (1024 * 1024)
+    else:
+        generator = random.Random(0)
+        wheel_extra = tuple(
+            (f"dcc_mcp_tiled/data/{index}.bin", generator.randbytes(3_500_000))
+            for index in range(5)
+        )
+        payload = b""
+    if case.startswith("wheel") and not wheel_extra:
+        wheel_extra = (("dcc_mcp_tiled/data/payload.bin", payload),)
+    if case.startswith("sdist"):
+        sdist_extra = (("dcc_mcp_tiled-0.4.0/data/payload.bin", payload, tarfile.REGTYPE),)
+    bundle, manifest_sha = _package_bundle(
+        tmp_path,
+        wheel_extra=wheel_extra,
+        sdist_extra=sdist_extra,
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
         module.verify_bundle(bundle, "0.4.0", manifest_sha)
 
 
