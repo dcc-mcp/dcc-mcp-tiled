@@ -231,6 +231,15 @@ def test_release_jobs_have_least_privilege_and_pypi_is_oidc_only() -> None:
     assert "password" not in publishers[0].get("with", {})
 
 
+def test_release_assets_wait_for_publish_and_never_overwrite_a_name_collision() -> None:
+    workflow = _workflow()
+    attach = workflow["jobs"]["attach-release-assets"]
+
+    assert "publish" in attach["needs"]
+    upload = _step(attach, "Attach verified assets to release")
+    assert upload["with"]["overwrite_files"] == "false"
+
+
 def test_build_toolchain_is_hash_locked() -> None:
     workflow = _workflow()
     install = _step(workflow["jobs"]["build"], "Install reviewed build toolchain")

@@ -287,6 +287,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          overwrite_files: false
           files: |
             release-bundle/dist/*
             release-bundle/SHA256SUMS
