@@ -12,7 +12,7 @@ metadata:
   dcc-mcp:
     dcc: tiled
     layer: domain
-    version: "0.4.1"  # x-release-please-version
+    version: "0.4.2"  # x-release-please-version
     search-hint: "Tiled TMX TMJ tilemap level design object layer tileset paint validate convert Godot map"
     tags: [tiled, tilemap, level-design, game-dev, pipeline]
     tools: tools.yaml
