@@ -45,6 +45,7 @@ STEP_IDS = {
         "setup-python",
         "install-version-verifier",
         "verify-target",
+        "recapture-bundle",
         "download-bundle",
         "verify-bundle",
         "recapture-release",
@@ -55,6 +56,7 @@ STEP_IDS = {
         "setup-python",
         "install-version-verifier",
         "verify-target",
+        "recapture-bundle",
         "download-bundle",
         "verify-bundle",
         "recapture-release",
@@ -85,7 +87,7 @@ RUN_SHA256 = {
     ("build", "install-build-toolchain"): (
         "308f0e905761d27d044cca35cfdcaa6f194bdf59e7badfc279695491b922e4c0"
     ),
-    ("build", "build-bundle"): ("c58aaf387fafc52ed48aff7e82dae36a20370b5ae128fa0b3d021f772d41af23"),
+    ("build", "build-bundle"): ("0465990c618430b3d461d1803937cfa82de00a2e34140fef77c735417dcdc178"),
     ("build", "bundle-identity"): (
         "171ec83824da0a6306c4033fbdeebabbd1d30a9e2ea5b9c5550cbe4c154732f1"
     ),
@@ -94,6 +96,9 @@ RUN_SHA256 = {
     ),
     ("publish", "verify-target"): (
         "28ef3cbcbb8e2f484928e4520d866a1065076eb4c39e08378c301eb255bf314f"
+    ),
+    ("publish", "recapture-bundle"): (
+        "0a718155a8773a8282407d39788398ad5198fea7196b15a8cd2ec7d9355ce7a6"
     ),
     ("publish", "verify-bundle"): (
         "8180a3c9bb8a39e094122b121f875e84cf1cdc5b1a0e4d790e86602e0fc1ab72"
@@ -106,6 +111,9 @@ RUN_SHA256 = {
     ),
     ("attach-release-assets", "verify-target"): (
         "28ef3cbcbb8e2f484928e4520d866a1065076eb4c39e08378c301eb255bf314f"
+    ),
+    ("attach-release-assets", "recapture-bundle"): (
+        "0a718155a8773a8282407d39788398ad5198fea7196b15a8cd2ec7d9355ce7a6"
     ),
     ("attach-release-assets", "verify-bundle"): (
         "8180a3c9bb8a39e094122b121f875e84cf1cdc5b1a0e4d790e86602e0fc1ab72"
@@ -149,7 +157,11 @@ JOB_METADATA = {
         "if": "needs.release-please.outputs.release_created == 'true'",
         "runs-on": "ubuntu-latest",
         "permissions": {"contents": "read"},
-        "outputs": {"bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}"},
+        "outputs": {
+            "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+            "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+            "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
+        },
     },
     "publish": {
         "needs": ["release-please", "build"],
@@ -159,7 +171,7 @@ JOB_METADATA = {
             "name": "pypi",
             "url": "https://pypi.org/p/dcc-mcp-tiled",
         },
-        "permissions": {"contents": "read", "id-token": "write"},
+        "permissions": {"actions": "read", "contents": "read", "id-token": "write"},
     },
     "attach-release-assets": {
         "needs": ["release-please", "build", "publish"],
@@ -168,7 +180,7 @@ JOB_METADATA = {
             "&& needs.publish.result == 'success'"
         ),
         "runs-on": "ubuntu-latest",
-        "permissions": {"contents": "write"},
+        "permissions": {"actions": "read", "contents": "write"},
     },
 }
 
@@ -189,6 +201,7 @@ STEP_NAMES = {
     ("build", "upload-bundle"): "Upload immutable release bundle",
     ("publish", "install-version-verifier"): "Install the semantic version verifier",
     ("publish", "verify-target"): "Verify immutable release target",
+    ("publish", "recapture-bundle"): "Recapture exact GitHub Actions artifact identity",
     ("publish", "download-bundle"): "Download immutable release bundle",
     ("publish", "verify-bundle"): "Verify release artifacts",
     ("publish", "recapture-release"): (
@@ -199,6 +212,9 @@ STEP_NAMES = {
         "Install the semantic version verifier"
     ),
     ("attach-release-assets", "verify-target"): "Verify immutable release target",
+    ("attach-release-assets", "recapture-bundle"): (
+        "Recapture exact GitHub Actions artifact identity"
+    ),
     ("attach-release-assets", "download-bundle"): "Download immutable release bundle",
     ("attach-release-assets", "verify-bundle"): "Verify release artifacts",
     ("attach-release-assets", "recapture-release"): (
@@ -252,7 +268,7 @@ ACTION_INPUTS = {
     ("publish", "checkout-release"): NEEDS_CHECKOUT,
     ("publish", "setup-python"): {"python-version": "3.12"},
     ("publish", "download-bundle"): {
-        "name": "release-bundle",
+        "artifact-ids": "${{ needs.build.outputs.bundle_artifact_id }}",
         "path": "release-bundle",
     },
     ("publish", "publish-pypi"): {
@@ -263,7 +279,7 @@ ACTION_INPUTS = {
     ("attach-release-assets", "checkout-release"): NEEDS_CHECKOUT,
     ("attach-release-assets", "setup-python"): {"python-version": "3.12"},
     ("attach-release-assets", "download-bundle"): {
-        "name": "release-bundle",
+        "artifact-ids": "${{ needs.build.outputs.bundle_artifact_id }}",
         "path": "release-bundle",
     },
 }
@@ -280,9 +296,11 @@ STEP_SHELLS = {
     ("build", "verify-target"),
     ("build", "bundle-identity"),
     ("publish", "verify-target"),
+    ("publish", "recapture-bundle"),
     ("publish", "verify-bundle"),
     ("publish", "recapture-release"),
     ("attach-release-assets", "verify-target"),
+    ("attach-release-assets", "recapture-bundle"),
     ("attach-release-assets", "verify-bundle"),
     ("attach-release-assets", "recapture-release"),
     ("attach-release-assets", "upload-release-assets"),
@@ -327,6 +345,31 @@ RECAPTURE_COMMAND = [
     "${EXPECTED_RELEASE_ASSETS_SHA256}",
 ]
 
+ARTIFACT_RECAPTURE_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "EXPECTED_ARTIFACT_ID": "${{ needs.build.outputs.bundle_artifact_id }}",
+    "EXPECTED_ARTIFACT_DIGEST": "${{ needs.build.outputs.bundle_artifact_digest }}",
+    "EXPECTED_RUN_ID": "${{ github.run_id }}",
+    "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
+}
+
+ARTIFACT_RECAPTURE_COMMAND = [
+    "python",
+    "tools/verify_workflow_artifact.py",
+    "--repository",
+    "${GITHUB_REPOSITORY}",
+    "--artifact-id",
+    "${EXPECTED_ARTIFACT_ID}",
+    "--artifact-name",
+    "release-bundle",
+    "--artifact-digest",
+    "${EXPECTED_ARTIFACT_DIGEST}",
+    "--run-id",
+    "${EXPECTED_RUN_ID}",
+    "--head-sha",
+    "${EXPECTED_SHA}",
+]
+
 UPLOAD_ENV = {
     "GH_TOKEN": "${{ github.token }}",
     "EXPECTED_TAG": "${{ needs.release-please.outputs.tag_name }}",
@@ -355,12 +398,15 @@ STEP_ENVS = {
         "EXPECTED_SHA": "${{ steps.target.outputs.tag_sha }}",
     },
     ("build", "verify-target"): NEEDS_TARGET_ENV,
+    ("build", "build-bundle"): {"EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}"},
     ("publish", "verify-target"): NEEDS_TARGET_ENV,
+    ("publish", "recapture-bundle"): ARTIFACT_RECAPTURE_ENV,
     ("publish", "verify-bundle"): {
         "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}"
     },
     ("publish", "recapture-release"): RECAPTURE_ENV,
     ("attach-release-assets", "verify-target"): NEEDS_TARGET_ENV,
+    ("attach-release-assets", "recapture-bundle"): ARTIFACT_RECAPTURE_ENV,
     ("attach-release-assets", "verify-bundle"): {
         "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}"
     },
@@ -602,6 +648,21 @@ def verify_workflow(workflow: dict[str, Any]) -> None:
             _require("continue-on-error" not in step, f"{job_name} failure may be ignored")
 
     for job_name in ("publish", "attach-release-assets"):
+        artifact = _step_by_id(steps[job_name], "recapture-bundle")
+        _require(
+            set(artifact) == {"name", "id", "env", "shell", "run"},
+            "artifact recapture shape changed",
+        )
+        _require(
+            artifact.get("env") == ARTIFACT_RECAPTURE_ENV,
+            "artifact recapture identity inputs changed",
+        )
+        _require(artifact.get("shell") == "bash", "artifact recapture shell changed")
+        _require(
+            _command(artifact) == ARTIFACT_RECAPTURE_COMMAND,
+            "artifact recapture executable body changed",
+        )
+
         recapture = _step_by_id(steps[job_name], "recapture-release")
         _require(set(recapture) == {"name", "id", "env", "shell", "run"}, "recapture shape changed")
         _require(recapture.get("env") == RECAPTURE_ENV, "recapture identity inputs changed")

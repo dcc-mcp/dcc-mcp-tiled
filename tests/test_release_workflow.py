@@ -56,6 +56,23 @@ RECAPTURE_COMMAND = [
     "${EXPECTED_RELEASE_ASSETS_SHA256}",
 ]
 
+ARTIFACT_RECAPTURE_COMMAND = [
+    "python",
+    "tools/verify_workflow_artifact.py",
+    "--repository",
+    "${GITHUB_REPOSITORY}",
+    "--artifact-id",
+    "${EXPECTED_ARTIFACT_ID}",
+    "--artifact-name",
+    "release-bundle",
+    "--artifact-digest",
+    "${EXPECTED_ARTIFACT_DIGEST}",
+    "--run-id",
+    "${EXPECTED_RUN_ID}",
+    "--head-sha",
+    "${EXPECTED_SHA}",
+]
+
 
 def _workflow() -> dict:
     return yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -119,6 +136,7 @@ def test_pull_requests_run_a_non_mutating_online_release_guard() -> None:
     assert "id-token" not in guard["permissions"]
     scripts = "\n".join(step.get("run", "") for step in guard["steps"])
     assert "tests/test_release_workflow.py" in scripts
+    assert "tests/test_workflow_artifact.py" in scripts
     assert "tests/test_version_consistency.py" in scripts
     assert "python tools/verify_version_consistency.py" in scripts
     assert SEMANTIC_INSTALL in scripts.replace("\n", " ")
@@ -129,6 +147,7 @@ def test_pull_requests_run_a_non_mutating_online_release_guard() -> None:
     ) in scripts.replace("\n", " ")
     assert "python -m build --no-isolation" in scripts
     assert "python -m twine check dist/*" in scripts
+    assert "python tools/verify_package_artifacts.py" in scripts
     assert "expected-files.txt" in scripts
 
 
@@ -202,8 +221,15 @@ def test_every_release_consumer_rechecks_head_tag_sha_version_and_artifacts() ->
         assert "EXPECTED_MANIFEST_SHA256" in artifact_check["run"]
 
     assert jobs["build"]["outputs"] == {
-        "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}"
+        "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+        "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+        "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
     }
+    build_script = _step(jobs["build"], "Build and validate distributions")["run"]
+    assert (
+        'python tools/verify_package_artifacts.py --dist dist --version "$EXPECTED_VERSION"'
+        in build_script
+    )
 
 
 def test_mutations_immediately_follow_fresh_remote_identity_recapture() -> None:
@@ -234,6 +260,42 @@ def test_mutations_immediately_follow_fresh_remote_identity_recapture() -> None:
         _assert_exact_recapture_command(recapture["run"])
 
 
+def test_consumers_bind_exact_github_artifact_before_numeric_download() -> None:
+    jobs = _workflow()["jobs"]
+    assert jobs["build"]["outputs"] == {
+        "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+        "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+        "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
+    }
+    for job_name, permissions in (
+        ("publish", {"actions": "read", "contents": "read", "id-token": "write"}),
+        ("attach-release-assets", {"actions": "read", "contents": "write"}),
+    ):
+        job = jobs[job_name]
+        assert job["permissions"] == permissions
+        download_index = next(
+            index for index, step in enumerate(job["steps"]) if step.get("id") == "download-bundle"
+        )
+        recapture = job["steps"][download_index - 1]
+        assert recapture["id"] == "recapture-bundle"
+        assert recapture["env"] == {
+            "GH_TOKEN": "${{ github.token }}",
+            "EXPECTED_ARTIFACT_ID": "${{ needs.build.outputs.bundle_artifact_id }}",
+            "EXPECTED_ARTIFACT_DIGEST": "${{ needs.build.outputs.bundle_artifact_digest }}",
+            "EXPECTED_RUN_ID": "${{ github.run_id }}",
+            "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
+        }
+        assert recapture["shell"] == "bash"
+        assert shlex.split(recapture["run"].replace("\\\n", " "), posix=True) == (
+            ARTIFACT_RECAPTURE_COMMAND
+        )
+        download = job["steps"][download_index]
+        assert download["with"] == {
+            "artifact-ids": "${{ needs.build.outputs.bundle_artifact_id }}",
+            "path": "release-bundle",
+        }
+
+
 def test_mutation_guard_contract_rejects_comment_deception() -> None:
     deceptive = "echo '# python tools/verify_release_identity.py --tag fake'"
     with pytest.raises(AssertionError):
@@ -251,8 +313,15 @@ def test_release_jobs_have_least_privilege_and_pypi_is_oidc_only() -> None:
         "pull-requests": "write",
     }
     assert jobs["build"]["permissions"] == {"contents": "read"}
-    assert jobs["publish"]["permissions"] == {"contents": "read", "id-token": "write"}
-    assert jobs["attach-release-assets"]["permissions"] == {"contents": "write"}
+    assert jobs["publish"]["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert jobs["attach-release-assets"]["permissions"] == {
+        "actions": "read",
+        "contents": "write",
+    }
     assert "PYPI_API_TOKEN" not in text
     publishers = [
         step
@@ -323,6 +392,125 @@ def test_release_workflow_matches_structural_mutation_contract() -> None:
     ],
 )
 def test_release_workflow_guard_rejects_decoys_reordering_and_extra_mutation(mutate) -> None:
+    workflow = copy.deepcopy(_workflow())
+    mutate(workflow)
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
+
+
+def _remove_artifact_recapture(workflow: dict, job_name: str) -> None:
+    steps = workflow["jobs"][job_name]["steps"]
+    workflow["jobs"][job_name]["steps"] = [
+        step for step in steps if step.get("id") != "recapture-bundle"
+    ]
+
+
+def _move_artifact_recapture_after_download(workflow: dict, job_name: str) -> None:
+    steps = workflow["jobs"][job_name]["steps"]
+    recapture_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "recapture-bundle"
+    )
+    download_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "download-bundle"
+    )
+    steps[recapture_index], steps[download_index] = steps[download_index], steps[recapture_index]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda workflow: workflow["jobs"]["build"]["outputs"].pop("bundle_artifact_id"),
+            id="missing-artifact-id-output",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["build"]["outputs"].__setitem__(
+                "bundle_artifact_id", "${{ steps.decoy.outputs.artifact-id }}"
+            ),
+            id="artifact-id-output-decoy",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["build"]["outputs"].__setitem__(
+                "bundle_artifact_digest", "${{ steps.decoy.outputs.artifact-digest }}"
+            ),
+            id="artifact-digest-output-decoy",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["publish"]["permissions"].__setitem__(
+                "actions", "write"
+            ),
+            id="excessive-actions-permission",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["attach-release-assets"]["permissions"].pop(
+                "actions"
+            ),
+            id="missing-actions-permission",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "recapture-bundle")[
+                "env"
+            ].__setitem__("EXPECTED_ARTIFACT_ID", "123"),
+            id="artifact-id-input",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "recapture-bundle")[
+                "env"
+            ].__setitem__("EXPECTED_ARTIFACT_DIGEST", "unreviewed"),
+            id="artifact-digest-input",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "recapture-bundle")[
+                "env"
+            ].__setitem__("EXPECTED_RUN_ID", "123"),
+            id="run-id-input",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "recapture-bundle")[
+                "env"
+            ].__setitem__("EXPECTED_SHA", "unreviewed"),
+            id="head-sha-input",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "recapture-bundle").__setitem__(
+                "run",
+                _step_id(workflow["jobs"]["publish"], "recapture-bundle")["run"].replace(
+                    "${GITHUB_REPOSITORY}", "unreviewed/other-repository"
+                ),
+            ),
+            id="repository-input",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "download-bundle")[
+                "with"
+            ].__setitem__("artifact-ids", "123"),
+            id="download-artifact-id",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["publish"], "download-bundle")[
+                "with"
+            ].__setitem__("name", "release-bundle"),
+            id="mutable-name-download",
+        ),
+        pytest.param(
+            lambda workflow: _remove_artifact_recapture(workflow, "publish"),
+            id="missing-recapture",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["publish"]["steps"].insert(
+                4,
+                copy.deepcopy(_step_id(workflow["jobs"]["publish"], "recapture-bundle")),
+            ),
+            id="duplicate-recapture-decoy",
+        ),
+        pytest.param(
+            lambda workflow: _move_artifact_recapture_after_download(workflow, "publish"),
+            id="recapture-after-download",
+        ),
+    ],
+)
+def test_release_workflow_guard_freezes_exact_artifact_handoff(mutate) -> None:
     workflow = copy.deepcopy(_workflow())
     mutate(workflow)
 

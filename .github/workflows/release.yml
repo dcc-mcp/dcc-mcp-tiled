@@ -131,6 +131,8 @@ jobs:
       contents: read
     outputs:
       bundle_manifest_sha256: ${{ steps.bundle-identity.outputs.sha256 }}
+      bundle_artifact_id: ${{ steps.upload-bundle.outputs.artifact-id }}
+      bundle_artifact_digest: ${{ steps.upload-bundle.outputs.artifact-digest }}
     steps:
       - id: checkout-release
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -169,9 +171,12 @@ jobs:
           --require-hashes -r tools/release-build-requirements.txt
       - name: Build and validate distributions
         id: build-bundle
+        env:
+          EXPECTED_VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           set -euo pipefail
           python -m build --no-isolation
+          python tools/verify_package_artifacts.py --dist dist --version "$EXPECTED_VERSION"
           python -m twine check dist/*
           test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
           test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
@@ -204,6 +209,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/dcc-mcp-tiled
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
@@ -237,11 +243,28 @@ jobs:
             exit 1
           fi
           python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Recapture exact GitHub Actions artifact identity
+        id: recapture-bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.bundle_artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.bundle_artifact_digest }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/verify_workflow_artifact.py
+          --repository "${GITHUB_REPOSITORY}"
+          --artifact-id "${EXPECTED_ARTIFACT_ID}"
+          --artifact-name release-bundle
+          --artifact-digest "${EXPECTED_ARTIFACT_DIGEST}"
+          --run-id "${EXPECTED_RUN_ID}"
+          --head-sha "${EXPECTED_SHA}"
       - name: Download immutable release bundle
         id: download-bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: release-bundle
+          artifact-ids: ${{ needs.build.outputs.bundle_artifact_id }}
           path: release-bundle
       - name: Verify release artifacts
         id: verify-bundle
@@ -296,6 +319,7 @@ jobs:
       needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
       - id: checkout-release
@@ -328,11 +352,28 @@ jobs:
             exit 1
           fi
           python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Recapture exact GitHub Actions artifact identity
+        id: recapture-bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.build.outputs.bundle_artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build.outputs.bundle_artifact_digest }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA: ${{ needs.release-please.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/verify_workflow_artifact.py
+          --repository "${GITHUB_REPOSITORY}"
+          --artifact-id "${EXPECTED_ARTIFACT_ID}"
+          --artifact-name release-bundle
+          --artifact-digest "${EXPECTED_ARTIFACT_DIGEST}"
+          --run-id "${EXPECTED_RUN_ID}"
+          --head-sha "${EXPECTED_SHA}"
       - name: Download immutable release bundle
         id: download-bundle
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: release-bundle
+          artifact-ids: ${{ needs.build.outputs.bundle_artifact_id }}
           path: release-bundle
       - name: Verify release artifacts
         id: verify-bundle
