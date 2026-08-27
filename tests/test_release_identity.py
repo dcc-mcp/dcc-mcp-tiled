@@ -76,6 +76,29 @@ def _package_bundle(
     return bundle, hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
+def _package_bundle_with_members(
+    tmp_path: Path,
+    *,
+    archive_kind: str,
+    members: tuple[tuple[str, bytes, bytes], ...],
+) -> tuple[Path, str]:
+    if archive_kind == "wheel":
+        return _package_bundle(
+            tmp_path,
+            wheel_extra=tuple(
+                (f"dcc_mcp_tiled/{name}", payload) for name, payload, _member_type in members
+            ),
+        )
+    assert archive_kind == "sdist"
+    return _package_bundle(
+        tmp_path,
+        sdist_extra=tuple(
+            (f"dcc_mcp_tiled-0.4.0/{name}", payload, member_type)
+            for name, payload, member_type in members
+        ),
+    )
+
+
 def test_remote_resolver_is_bounded_and_peels_annotated_tags() -> None:
     module = _module()
     commit = "a" * 40
@@ -181,6 +204,168 @@ def test_bundle_verifier_rejects_duplicate_archive_members(
 
     with pytest.raises(module.IdentityError, match="package archive"):
         module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Alias.py", "alias.py"),
+        ("caf\u00e9.py", "cafe\u0301.py"),
+        ("Alias.py", "\uff21lias.py"),
+    ],
+    ids=["casefold", "unicode-composition", "unicode-width"],
+)
+def test_bundle_verifier_rejects_portable_member_aliases(
+    tmp_path: Path, archive_kind: str, first: str, second: str
+) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle_with_members(
+        tmp_path,
+        archive_kind=archive_kind,
+        members=tuple(
+            (f"data/{name}", name.encode("utf-8"), tarfile.REGTYPE) for name in (first, second)
+        ),
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "trailing.",
+        "trailing ",
+        "CON",
+        "nul.txt",
+        "LPT9.log",
+        "COM\u00b9.txt",
+        "payload.txt:stream",
+        "payload.txt\uff1astream",
+        "nested\uff0fname.py",
+        "CON/child.py",
+        "trailing./child.py",
+        "payload:stream/child.py",
+    ],
+    ids=[
+        "trailing-dot",
+        "trailing-space",
+        "con-device",
+        "nul-device-extension",
+        "lpt-device-extension",
+        "compatibility-device-digit",
+        "ads",
+        "normalized-ads",
+        "normalized-separator",
+        "reserved-parent",
+        "trailing-dot-parent",
+        "ads-parent",
+    ],
+)
+def test_bundle_verifier_rejects_nonportable_member_segments(
+    tmp_path: Path, archive_kind: str, name: str
+) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle_with_members(
+        tmp_path,
+        archive_kind=archive_kind,
+        members=((f"data/{name}", b"payload", tarfile.REGTYPE),),
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+PORTABLE_TOPOLOGY_CASES = {
+    "file-before-child": (
+        ("data/node", tarfile.REGTYPE),
+        ("data/node/child.py", tarfile.REGTYPE),
+    ),
+    "child-before-file": (
+        ("data/node/child.py", tarfile.REGTYPE),
+        ("data/node", tarfile.REGTYPE),
+    ),
+    "portable-file-before-child": (
+        ("data/Alias", tarfile.REGTYPE),
+        ("data/alias/child.py", tarfile.REGTYPE),
+    ),
+    "portable-child-before-file": (
+        ("data/Alias/child.py", tarfile.REGTYPE),
+        ("data/alias", tarfile.REGTYPE),
+    ),
+    "file-before-explicit-dir": (
+        ("data/node", tarfile.REGTYPE),
+        ("data/node/", tarfile.DIRTYPE),
+    ),
+    "explicit-dir-before-file": (
+        ("data/node/", tarfile.DIRTYPE),
+        ("data/node", tarfile.REGTYPE),
+    ),
+    "implicit-dir-alias": (
+        ("data/Alias/first.py", tarfile.REGTYPE),
+        ("data/alias/second.py", tarfile.REGTYPE),
+    ),
+    "explicit-implicit-dir-alias": (
+        ("data/Alias/", tarfile.DIRTYPE),
+        ("data/alias/child.py", tarfile.REGTYPE),
+    ),
+    "implicit-explicit-dir-alias": (
+        ("data/Alias/child.py", tarfile.REGTYPE),
+        ("data/alias/", tarfile.DIRTYPE),
+    ),
+    "duplicate-normalized-dirs": (
+        ("data/Alias/", tarfile.DIRTYPE),
+        ("data/alias/", tarfile.DIRTYPE),
+    ),
+}
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+@pytest.mark.parametrize(
+    "members",
+    PORTABLE_TOPOLOGY_CASES.values(),
+    ids=PORTABLE_TOPOLOGY_CASES,
+)
+def test_bundle_verifier_rejects_portable_topology_collisions(
+    tmp_path: Path,
+    archive_kind: str,
+    members: tuple[tuple[str, bytes], ...],
+) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle_with_members(
+        tmp_path,
+        archive_kind=archive_kind,
+        members=tuple(
+            (
+                name,
+                b"" if member_type == tarfile.DIRTYPE else b"payload",
+                member_type,
+            )
+            for name, member_type in members
+        ),
+    )
+
+    with pytest.raises(module.IdentityError, match="package archive"):
+        module.verify_bundle(bundle, "0.4.0", manifest_sha)
+
+
+@pytest.mark.parametrize("archive_kind", ["wheel", "sdist"])
+def test_bundle_verifier_accepts_explicit_directory_with_child(
+    tmp_path: Path, archive_kind: str
+) -> None:
+    module = _module()
+    bundle, manifest_sha = _package_bundle_with_members(
+        tmp_path,
+        archive_kind=archive_kind,
+        members=(
+            ("data/node/", b"", tarfile.DIRTYPE),
+            ("data/node/child.py", b"payload", tarfile.REGTYPE),
+        ),
+    )
+
+    module.verify_bundle(bundle, "0.4.0", manifest_sha)
 
 
 @pytest.mark.parametrize(
