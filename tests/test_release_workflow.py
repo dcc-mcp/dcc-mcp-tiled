@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import copy
+import importlib.util
 import re
 import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+WORKFLOW_GUARD = ROOT / "tools" / "verify_release_workflow.py"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 REQUIREMENTS = ROOT / "tools" / "release-build-requirements.txt"
 VERSION_REQUIREMENTS = ROOT / "tools" / "release-version-requirements.txt"
@@ -27,7 +31,6 @@ ACTION_PINS = {
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
     "googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
     "pypa/gh-action-pypi-publish": "dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
-    "softprops/action-gh-release": "3bb12739c298aeb8a4eeaf626c5b8d85266b0e65",
 }
 
 RECAPTURE_COMMAND = [
@@ -45,6 +48,12 @@ RECAPTURE_COMMAND = [
     "release-bundle",
     "--manifest-sha256",
     "${EXPECTED_MANIFEST_SHA256}",
+    "--release-id",
+    "${EXPECTED_RELEASE_ID}",
+    "--release-node-id",
+    "${EXPECTED_RELEASE_NODE_ID}",
+    "--release-assets-sha256",
+    "${EXPECTED_RELEASE_ASSETS_SHA256}",
 ]
 
 
@@ -52,9 +61,24 @@ def _workflow() -> dict:
     return yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
 
+def _workflow_guard():
+    spec = importlib.util.spec_from_file_location("verify_release_workflow", WORKFLOW_GUARD)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _step(job: dict, name: str) -> dict:
     matches = [step for step in job["steps"] if step.get("name") == name]
     assert len(matches) == 1, (name, matches)
+    return matches[0]
+
+
+def _step_id(job: dict, step_id: str) -> dict:
+    matches = [step for step in job["steps"] if step.get("id") == step_id]
+    assert len(matches) == 1, (step_id, matches)
     return matches[0]
 
 
@@ -118,6 +142,9 @@ def test_release_please_freezes_a_canonical_tag_to_one_commit() -> None:
         "tag_name": "${{ steps.target.outputs.tag_name }}",
         "tag_sha": "${{ steps.target.outputs.tag_sha }}",
         "version": "${{ steps.target.outputs.version }}",
+        "release_id": "${{ steps.release-identity.outputs.release_id }}",
+        "release_node_id": "${{ steps.release-identity.outputs.release_node_id }}",
+        "release_assets_sha256": ("${{ steps.release-identity.outputs.release_assets_sha256 }}"),
     }
     target = _step(release, "Resolve immutable release target")
     assert target["if"] == "steps.release.outputs.release_created == 'true'"
@@ -127,6 +154,9 @@ def test_release_please_freezes_a_canonical_tag_to_one_commit() -> None:
     assert "git/ref/tags/${RELEASE_TAG}" in script
     assert "git/tags/${object_sha}" in script
     assert "tag_sha=$object_sha" in script
+    freeze = _step_id(release, "release-identity")
+    assert freeze["if"] == "steps.release.outputs.release_created == 'true'"
+    assert "tools/freeze_release_identity.py" in freeze["run"]
 
 
 def test_every_release_consumer_rechecks_head_tag_sha_version_and_artifacts() -> None:
@@ -179,15 +209,12 @@ def test_every_release_consumer_rechecks_head_tag_sha_version_and_artifacts() ->
 def test_mutations_immediately_follow_fresh_remote_identity_recapture() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
-    cases = {
-        "publish": "Publish to PyPI with trusted publishing",
-        "attach-release-assets": "Attach verified assets to release",
-    }
+    cases = {"publish": "publish-pypi", "attach-release-assets": "upload-release-assets"}
 
-    for job_name, mutation_name in cases.items():
+    for job_name, mutation_id in cases.items():
         steps = jobs[job_name]["steps"]
         mutation_index = next(
-            index for index, step in enumerate(steps) if step.get("name") == mutation_name
+            index for index, step in enumerate(steps) if step.get("id") == mutation_id
         )
         assert mutation_index > 0
         recapture = steps[mutation_index - 1]
@@ -198,6 +225,11 @@ def test_mutations_immediately_follow_fresh_remote_identity_recapture() -> None:
             "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
             "EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}",
             "EXPECTED_MANIFEST_SHA256": "${{ needs.build.outputs.bundle_manifest_sha256 }}",
+            "EXPECTED_RELEASE_ID": "${{ needs.release-please.outputs.release_id }}",
+            "EXPECTED_RELEASE_NODE_ID": ("${{ needs.release-please.outputs.release_node_id }}"),
+            "EXPECTED_RELEASE_ASSETS_SHA256": (
+                "${{ needs.release-please.outputs.release_assets_sha256 }}"
+            ),
         }
         _assert_exact_recapture_command(recapture["run"])
 
@@ -231,13 +263,71 @@ def test_release_jobs_have_least_privilege_and_pypi_is_oidc_only() -> None:
     assert "password" not in publishers[0].get("with", {})
 
 
-def test_release_assets_wait_for_publish_and_never_overwrite_a_name_collision() -> None:
+def test_release_assets_wait_for_publish_and_use_fail_closed_uploader() -> None:
     workflow = _workflow()
     attach = workflow["jobs"]["attach-release-assets"]
+    steps = attach["steps"]
 
     assert "publish" in attach["needs"]
-    upload = _step(attach, "Attach verified assets to release")
-    assert upload["with"]["overwrite_files"] == "false"
+    assert attach["if"] == (
+        "needs.release-please.outputs.release_created == 'true' && "
+        "needs.publish.result == 'success'"
+    )
+    assert all(
+        not step.get("uses", "").startswith("softprops/action-gh-release@") for step in steps
+    )
+    assert steps[-2]["id"] == "recapture-release"
+    assert steps[-1]["id"] == "upload-release-assets"
+    assert shlex.split(steps[-1]["run"], posix=True)[0:2] == [
+        "python",
+        "tools/upload_release_assets.py",
+    ]
+    assert "--clobber" not in steps[-1]["run"]
+
+
+def test_release_workflow_matches_structural_mutation_contract() -> None:
+    _workflow_guard().verify_workflow(_workflow())
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"].append(
+            {"id": "extra-release-mutation", "run": "gh release upload v0.4.0 evil --clobber"}
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"].__setitem__(
+            "if", "${{ always() }}"
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"].insert(
+            -1,
+            copy.deepcopy(workflow["jobs"]["attach-release-assets"]["steps"][-2]),
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"][-2].__setitem__(
+            "continue-on-error", "true"
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"][-1].__setitem__(
+            "id", "renamed-real-uploader"
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"][-3].__setitem__(
+            "run",
+            workflow["jobs"]["attach-release-assets"]["steps"][-3]["run"]
+            + "\ngh release upload v0.4.0 evil --clobber",
+        ),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"].reverse(),
+        lambda workflow: workflow["jobs"]["attach-release-assets"]["steps"][-1].update(
+            {
+                "uses": "softprops/action-gh-release@3bb0d6d05975cfd60b10da845f6a7b1cbd1e2a67",
+                "with": {"overwrite_files": "true"},
+            }
+        ),
+    ],
+)
+def test_release_workflow_guard_rejects_decoys_reordering_and_extra_mutation(mutate) -> None:
+    workflow = copy.deepcopy(_workflow())
+    mutate(workflow)
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
 
 
 def test_build_toolchain_is_hash_locked() -> None:

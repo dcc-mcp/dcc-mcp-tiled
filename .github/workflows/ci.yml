@@ -19,13 +19,15 @@ jobs:
         run: python tools/verify_version_consistency.py
       - run: python -m pip install -e ".[dev]"
       - name: Parse release workflow contracts without mutation
-        run: >-
-          python -m pytest -q
-          tests/test_release_workflow.py
-          tests/test_action_pin_guard.py
-          tests/test_release_identity.py
-          tests/test_release_please.py
-          tests/test_version_consistency.py
+        run: |
+          python tools/verify_release_workflow.py .github/workflows/release.yml
+          python -m pytest -q \
+            tests/test_release_workflow.py \
+            tests/test_action_pin_guard.py \
+            tests/test_release_identity.py \
+            tests/test_release_assets.py \
+            tests/test_release_please.py \
+            tests/test_version_consistency.py
       - name: Resolve every release action pin as an upstream commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
