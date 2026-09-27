@@ -3,6 +3,16 @@ name: Release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing canonical release tag to re-publish, for example v0.4.2."
+        required: true
+        type: string
+      source_sha:
+        description: "Optional commit the tag must resolve to; defaults to the tag commit."
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +23,7 @@ permissions:
 
 jobs:
   release-please:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -424,6 +435,396 @@ jobs:
           EXPECTED_RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
           EXPECTED_RELEASE_NODE_ID: ${{ needs.release-please.outputs.release_node_id }}
           EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.release-please.outputs.release_assets_sha256 }}
+        shell: bash
+        run: >-
+          python tools/upload_release_assets.py
+          --repository "${GITHUB_REPOSITORY}"
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --version "${EXPECTED_VERSION}"
+          --bundle release-bundle
+          --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"
+  recovery-target:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_name: ${{ steps.resolve-target.outputs.tag_name }}
+      tag_sha: ${{ steps.resolve-target.outputs.tag_sha }}
+      version: ${{ steps.resolve-target.outputs.version }}
+      release_id: ${{ steps.freeze-recovery.outputs.release_id }}
+      release_node_id: ${{ steps.freeze-recovery.outputs.release_node_id }}
+      release_assets_sha256: ${{ steps.freeze-recovery.outputs.release_assets_sha256 }}
+    steps:
+      - id: checkout-recovery
+        name: Check out the requested immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - id: setup-python
+        name: Set up Python for the recovery identity guard
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the semantic version verifier
+        id: install-version-verifier
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-version-requirements.txt
+      - name: Resolve the requested recovery release target
+        id: resolve-target
+        env:
+          RECOVERY_TAG: ${{ inputs.tag }}
+          RECOVERY_SOURCE_SHA: ${{ inputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RECOVERY_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "The recovery tag must be a canonical vMAJOR.MINOR.PATCH tag." >&2
+            exit 1
+          fi
+          version="${RECOVERY_TAG#v}"
+          sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "${RECOVERY_TAG}^{commit}")"
+          if [[ "$sha" != "$tag_sha" ]]; then
+            echo "The checked-out recovery commit does not match the requested tag." >&2
+            exit 1
+          fi
+          if [[ -n "$RECOVERY_SOURCE_SHA" && "$sha" != "$RECOVERY_SOURCE_SHA" ]]; then
+            echo "The requested recovery commit does not resolve the requested tag." >&2
+            exit 1
+          fi
+          python tools/verify_version_consistency.py --expected "$version"
+          echo "tag_name=$RECOVERY_TAG" >> "$GITHUB_OUTPUT"
+          echo "tag_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Freeze the existing GitHub Release entity and asset baseline
+        id: freeze-recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ steps.resolve-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ steps.resolve-target.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/freeze_release_identity.py
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --github-output "${GITHUB_OUTPUT}"
+
+  recovery-build:
+    needs: recovery-target
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      bundle_manifest_sha256: ${{ steps.bundle-identity.outputs.sha256 }}
+      bundle_artifact_id: ${{ steps.upload-bundle.outputs.artifact-id }}
+      bundle_artifact_digest: ${{ steps.upload-bundle.outputs.artifact-digest }}
+    steps:
+      - id: checkout-recovery
+        name: Check out the requested immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.recovery-target.outputs.tag_name }}
+          fetch-depth: 0
+      - id: setup-python
+        name: Set up Python for the recovery build
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the semantic version verifier
+        id: install-version-verifier
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-version-requirements.txt
+      - name: Verify immutable release target
+        id: verify-target
+        env:
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "${EXPECTED_TAG}^{commit}")"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" || "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Checked-out release identity does not match the frozen tag commit." >&2
+            exit 1
+          fi
+          python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Install reviewed build toolchain
+        id: install-build-toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-build-requirements.txt
+      - name: Build and validate distributions
+        id: build-bundle
+        env:
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m build --no-isolation
+          python tools/verify_package_artifacts.py --dist dist --version "$EXPECTED_VERSION"
+          python -m twine check dist/*
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+          mkdir -p release-bundle/dist
+          cp dist/*.whl dist/*.tar.gz release-bundle/dist/
+          (cd release-bundle && sha256sum dist/* > SHA256SUMS)
+      - name: Freeze release bundle identity
+        id: bundle-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256="$(sha256sum release-bundle/SHA256SUMS | awk '{print $1}')"
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload immutable release bundle
+        id: upload-bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-bundle
+          path: release-bundle/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  recovery-publish:
+    needs: [recovery-target, recovery-build]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/dcc-mcp-tiled
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - id: checkout-recovery
+        name: Check out the requested immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.recovery-target.outputs.tag_name }}
+          fetch-depth: 0
+      - id: setup-python
+        name: Set up Python for the recovery identity guard
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the semantic version verifier
+        id: install-version-verifier
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-version-requirements.txt
+      - name: Verify immutable release target
+        id: verify-target
+        env:
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "${EXPECTED_TAG}^{commit}")"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" || "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Checked-out release identity does not match the frozen tag commit." >&2
+            exit 1
+          fi
+          python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Recapture exact GitHub Actions artifact identity
+        id: recapture-bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.recovery-build.outputs.bundle_artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.recovery-build.outputs.bundle_artifact_digest }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/verify_workflow_artifact.py
+          --repository "${GITHUB_REPOSITORY}"
+          --artifact-id "${EXPECTED_ARTIFACT_ID}"
+          --artifact-name release-bundle
+          --artifact-digest "${EXPECTED_ARTIFACT_DIGEST}"
+          --run-id "${EXPECTED_RUN_ID}"
+          --head-sha "${EXPECTED_SHA}"
+      - name: Download immutable release bundle
+        id: download-bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ needs.recovery-build.outputs.bundle_artifact_id }}
+          path: release-bundle
+      - name: Verify release artifacts
+        id: verify-bundle
+        env:
+          EXPECTED_MANIFEST_SHA256: ${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-bundle
+          echo "$EXPECTED_MANIFEST_SHA256  SHA256SUMS" | sha256sum --check --strict
+          sha256sum --check --strict SHA256SUMS
+          awk '{print $2}' SHA256SUMS | LC_ALL=C sort > expected-files.txt
+          find dist -maxdepth 1 -type f -printf '%p\n' | LC_ALL=C sort > actual-files.txt
+          diff -u expected-files.txt actual-files.txt
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Recapture remote release identity immediately before mutation
+        id: recapture-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.recovery-target.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.recovery-target.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.recovery-target.outputs.release_assets_sha256 }}
+        shell: bash
+        run: >-
+          python tools/verify_release_identity.py
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --version "${EXPECTED_VERSION}"
+          --bundle release-bundle
+          --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"
+      - name: Publish to PyPI with trusted publishing
+        id: publish-pypi
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1.14
+        with:
+          packages-dir: release-bundle/dist
+          verbose: "true"
+          print-hash: "true"
+          skip-existing: "true"
+
+  recovery-attach-release-assets:
+    needs: [recovery-target, recovery-build, recovery-publish]
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      needs.recovery-publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - id: checkout-recovery
+        name: Check out the requested immutable release tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.recovery-target.outputs.tag_name }}
+          fetch-depth: 0
+      - id: setup-python
+        name: Set up Python for the recovery identity guard
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install the semantic version verifier
+        id: install-version-verifier
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r tools/release-version-requirements.txt
+      - name: Verify immutable release target
+        id: verify-target
+        env:
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          tag_sha="$(git rev-parse "${EXPECTED_TAG}^{commit}")"
+          if [[ "$actual_sha" != "$EXPECTED_SHA" || "$tag_sha" != "$EXPECTED_SHA" ]]; then
+            echo "Checked-out release identity does not match the frozen tag commit." >&2
+            exit 1
+          fi
+          python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"
+      - name: Recapture exact GitHub Actions artifact identity
+        id: recapture-bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.recovery-build.outputs.bundle_artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.recovery-build.outputs.bundle_artifact_digest }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+        shell: bash
+        run: >-
+          python tools/verify_workflow_artifact.py
+          --repository "${GITHUB_REPOSITORY}"
+          --artifact-id "${EXPECTED_ARTIFACT_ID}"
+          --artifact-name release-bundle
+          --artifact-digest "${EXPECTED_ARTIFACT_DIGEST}"
+          --run-id "${EXPECTED_RUN_ID}"
+          --head-sha "${EXPECTED_SHA}"
+      - name: Download immutable release bundle
+        id: download-bundle
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          artifact-ids: ${{ needs.recovery-build.outputs.bundle_artifact_id }}
+          path: release-bundle
+      - name: Verify release artifacts
+        id: verify-bundle
+        env:
+          EXPECTED_MANIFEST_SHA256: ${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-bundle
+          echo "$EXPECTED_MANIFEST_SHA256  SHA256SUMS" | sha256sum --check --strict
+          sha256sum --check --strict SHA256SUMS
+          awk '{print $2}' SHA256SUMS | LC_ALL=C sort > expected-files.txt
+          find dist -maxdepth 1 -type f -printf '%p\n' | LC_ALL=C sort > actual-files.txt
+          diff -u expected-files.txt actual-files.txt
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+      - name: Recapture remote release identity immediately before mutation
+        id: recapture-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.recovery-target.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.recovery-target.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.recovery-target.outputs.release_assets_sha256 }}
+        shell: bash
+        run: >-
+          python tools/verify_release_identity.py
+          --repository "${GITHUB_REPOSITORY}"
+          --tag "${EXPECTED_TAG}"
+          --sha "${EXPECTED_SHA}"
+          --version "${EXPECTED_VERSION}"
+          --bundle release-bundle
+          --manifest-sha256 "${EXPECTED_MANIFEST_SHA256}"
+          --release-id "${EXPECTED_RELEASE_ID}"
+          --release-node-id "${EXPECTED_RELEASE_NODE_ID}"
+          --release-assets-sha256 "${EXPECTED_RELEASE_ASSETS_SHA256}"
+      - name: Attach the exact verified assets to the frozen release
+        id: upload-release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_TAG: ${{ needs.recovery-target.outputs.tag_name }}
+          EXPECTED_SHA: ${{ needs.recovery-target.outputs.tag_sha }}
+          EXPECTED_VERSION: ${{ needs.recovery-target.outputs.version }}
+          EXPECTED_MANIFEST_SHA256: ${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}
+          EXPECTED_RELEASE_ID: ${{ needs.recovery-target.outputs.release_id }}
+          EXPECTED_RELEASE_NODE_ID: ${{ needs.recovery-target.outputs.release_node_id }}
+          EXPECTED_RELEASE_ASSETS_SHA256: ${{ needs.recovery-target.outputs.release_assets_sha256 }}
         shell: bash
         run: >-
           python tools/upload_release_assets.py

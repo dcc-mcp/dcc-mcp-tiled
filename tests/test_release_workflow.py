@@ -631,3 +631,236 @@ def test_released_030_notes_are_not_left_under_unreleased() -> None:
     assert "typed map, object, tileset" in released_030
     assert "subprocess cancellation and deadlines" in released_030
     assert "pinned Tiled 1.12.2" in released_030
+
+
+RECOVERY_JOBS = (
+    "recovery-target",
+    "recovery-build",
+    "recovery-publish",
+    "recovery-attach-release-assets",
+)
+
+VERSION_LITERAL = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+SHA_LITERAL = re.compile(r"\b[0-9a-f]{40}\b")
+
+FREEZE_COMMAND = [
+    "python",
+    "tools/freeze_release_identity.py",
+    "--repository",
+    "${GITHUB_REPOSITORY}",
+    "--tag",
+    "${EXPECTED_TAG}",
+    "--sha",
+    "${EXPECTED_SHA}",
+    "--github-output",
+    "${GITHUB_OUTPUT}",
+]
+
+RECOVERY_MUTATION_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "EXPECTED_TAG": "${{ needs.recovery-target.outputs.tag_name }}",
+    "EXPECTED_SHA": "${{ needs.recovery-target.outputs.tag_sha }}",
+    "EXPECTED_VERSION": "${{ needs.recovery-target.outputs.version }}",
+    "EXPECTED_MANIFEST_SHA256": "${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}",
+    "EXPECTED_RELEASE_ID": "${{ needs.recovery-target.outputs.release_id }}",
+    "EXPECTED_RELEASE_NODE_ID": "${{ needs.recovery-target.outputs.release_node_id }}",
+    "EXPECTED_RELEASE_ASSETS_SHA256": (
+        "${{ needs.recovery-target.outputs.release_assets_sha256 }}"
+    ),
+}
+
+
+def test_recovery_channel_accepts_any_existing_release_tag() -> None:
+    workflow = _workflow()
+    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+
+    assert inputs["tag"]["required"] == "true"
+    assert inputs["source_sha"]["required"] == "false"
+    for name, spec in inputs.items():
+        assert "default" not in spec, name
+    checkout = _step_id(workflow["jobs"]["recovery-target"], "checkout-recovery")
+    assert checkout["with"]["ref"] == "${{ inputs.tag }}"
+
+
+def test_recovery_steps_never_hardcode_a_version_or_commit() -> None:
+    workflow = _workflow()
+
+    for job_name in RECOVERY_JOBS:
+        for step in workflow["jobs"][job_name]["steps"]:
+            for key in ("run", "if"):
+                value = str(step.get(key, ""))
+                assert VERSION_LITERAL.search(value) is None, (job_name, step["id"], key)
+                assert SHA_LITERAL.search(value) is None, (job_name, step["id"], key)
+            for key, value in (step.get("env") or {}).items():
+                assert VERSION_LITERAL.search(value) is None, (job_name, step["id"], key)
+                assert SHA_LITERAL.search(value) is None, (job_name, step["id"], key)
+
+
+def test_recovery_jobs_run_only_on_workflow_dispatch() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+
+    assert jobs["release-please"]["if"] == (
+        "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    )
+    for job_name in RECOVERY_JOBS:
+        condition = str(jobs[job_name]["if"])
+        assert "github.event_name == 'workflow_dispatch'" in condition, job_name
+        assert "always(" not in condition.lower(), job_name
+    assert jobs["recovery-attach-release-assets"]["if"] == (
+        "github.event_name == 'workflow_dispatch' && needs.recovery-publish.result == 'success'"
+    )
+
+
+def test_recovery_target_resolves_the_tag_then_freezes_the_release() -> None:
+    workflow = _workflow()
+    target = workflow["jobs"]["recovery-target"]
+
+    assert target["outputs"] == {
+        "tag_name": "${{ steps.resolve-target.outputs.tag_name }}",
+        "tag_sha": "${{ steps.resolve-target.outputs.tag_sha }}",
+        "version": "${{ steps.resolve-target.outputs.version }}",
+        "release_id": "${{ steps.freeze-recovery.outputs.release_id }}",
+        "release_node_id": "${{ steps.freeze-recovery.outputs.release_node_id }}",
+        "release_assets_sha256": "${{ steps.freeze-recovery.outputs.release_assets_sha256 }}",
+    }
+    resolve = _step_id(target, "resolve-target")
+    assert resolve["env"] == {
+        "RECOVERY_TAG": "${{ inputs.tag }}",
+        "RECOVERY_SOURCE_SHA": "${{ inputs.source_sha }}",
+    }
+    script = resolve["run"]
+    assert "git rev-parse HEAD" in script
+    assert 'git rev-parse "${RECOVERY_TAG}^{commit}"' in script
+    assert 'python tools/verify_version_consistency.py --expected "$version"' in script
+    freeze = _step_id(target, "freeze-recovery")
+    assert shlex.split(freeze["run"].replace("\\\n", " "), posix=True) == FREEZE_COMMAND
+
+
+def test_recovery_consumers_recheck_tag_sha_version_and_artifacts() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+
+    for name in ("recovery-build", "recovery-publish", "recovery-attach-release-assets"):
+        job = jobs[name]
+        needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+        assert "recovery-target" in needs
+        assert _checkout(job)["with"] == {
+            "ref": "${{ needs.recovery-target.outputs.tag_name }}",
+            "fetch-depth": "0",
+        }
+        verify = _step(job, "Verify immutable release target")
+        assert verify["env"] == {
+            "EXPECTED_TAG": "${{ needs.recovery-target.outputs.tag_name }}",
+            "EXPECTED_SHA": "${{ needs.recovery-target.outputs.tag_sha }}",
+            "EXPECTED_VERSION": "${{ needs.recovery-target.outputs.version }}",
+        }
+        script = verify["run"]
+        assert "git rev-parse HEAD" in script
+        assert 'git rev-parse "${EXPECTED_TAG}^{commit}"' in script
+        assert 'python tools/verify_version_consistency.py --expected "$EXPECTED_VERSION"' in script
+
+    for name in ("recovery-publish", "recovery-attach-release-assets"):
+        job = jobs[name]
+        assert "recovery-build" in job["needs"]
+        artifact_check = _step(job, "Verify release artifacts")
+        assert artifact_check["env"] == {
+            "EXPECTED_MANIFEST_SHA256": "${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}"
+        }
+        assert "sha256sum --check --strict" in artifact_check["run"]
+
+    assert jobs["recovery-build"]["outputs"] == {
+        "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+        "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+        "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
+    }
+
+
+def test_recovery_mutations_immediately_follow_fresh_identity_recapture() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    cases = {
+        "recovery-publish": "publish-pypi",
+        "recovery-attach-release-assets": "upload-release-assets",
+    }
+
+    for job_name, mutation_id in cases.items():
+        steps = jobs[job_name]["steps"]
+        mutation_index = next(
+            index for index, step in enumerate(steps) if step.get("id") == mutation_id
+        )
+        assert mutation_index > 0
+        recapture = steps[mutation_index - 1]
+        assert recapture["name"] == "Recapture remote release identity immediately before mutation"
+        assert recapture["env"] == RECOVERY_MUTATION_ENV
+        _assert_exact_recapture_command(recapture["run"])
+
+
+def test_recovery_publisher_is_oidc_only_and_tolerates_existing_files() -> None:
+    workflow = _workflow()
+    publish = workflow["jobs"]["recovery-publish"]
+
+    assert publish["environment"] == {"name": "pypi", "url": "https://pypi.org/p/dcc-mcp-tiled"}
+    assert publish["permissions"] == {"actions": "read", "contents": "read", "id-token": "write"}
+    assert "PYPI_API_TOKEN" not in WORKFLOW.read_text(encoding="utf-8")
+    publishers = [
+        step
+        for step in publish["steps"]
+        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@")
+    ]
+    assert len(publishers) == 1
+    assert "password" not in publishers[0]["with"]
+    assert publishers[0]["with"]["skip-existing"] == "true"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"]["steps"].append(
+                copy.deepcopy(_step_id(workflow["jobs"]["recovery-publish"], "publish-pypi"))
+            ),
+            id="duplicate-recovery-publisher",
+        ),
+        pytest.param(
+            lambda workflow: workflow["on"]["workflow_dispatch"]["inputs"]["tag"].__setitem__(
+                "default", "v0.4.2"
+            ),
+            id="hardcoded-recovery-tag-default",
+        ),
+        pytest.param(
+            lambda workflow: workflow["on"]["workflow_dispatch"]["inputs"].pop("source_sha"),
+            id="missing-recovery-source-sha-input",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-target"].__setitem__(
+                "if", "${{ always() }}"
+            ),
+            id="recovery-always-dispatch",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-build"], "verify-target")[
+                "env"
+            ].__setitem__("EXPECTED_TAG", "${{ needs.release-please.outputs.tag_name }}"),
+            id="recovery-target-env-decoy",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-publish"], "publish-pypi")[
+                "with"
+            ].pop("skip-existing"),
+            id="recovery-publisher-missing-skip-existing",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-attach-release-assets"].__setitem__(
+                "needs", ["recovery-target", "recovery-build"]
+            ),
+            id="recovery-attach-before-publish",
+        ),
+    ],
+)
+def test_release_workflow_guard_rejects_recovery_channel_drift(mutate) -> None:
+    workflow = copy.deepcopy(_workflow())
+    mutate(workflow)
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
