@@ -656,7 +656,7 @@ RECOVERY_ARTIFACT_RECAPTURE_ENV = {
     "EXPECTED_ARTIFACT_ID": "${{ needs.recovery-build.outputs.bundle_artifact_id }}",
     "EXPECTED_ARTIFACT_DIGEST": "${{ needs.recovery-build.outputs.bundle_artifact_digest }}",
     "EXPECTED_RUN_ID": "${{ github.run_id }}",
-    "EXPECTED_SHA": "${{ needs.recovery-target.outputs.tag_sha }}",
+    "EXPECTED_SHA": "${{ github.sha }}",
 }
 
 RECOVERY_MUTATION_ENV = {

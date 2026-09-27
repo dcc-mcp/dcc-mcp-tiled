@@ -884,3 +884,23 @@ def test_release_workflow_guard_rejects_recovery_channel_drift(mutate) -> None:
 
     with pytest.raises(ValueError):
         _workflow_guard().verify_workflow(workflow)
+
+
+def test_recovery_artifact_recapture_binds_the_run_head_not_the_tag() -> None:
+    """A dispatch run uploads from the dispatch ref, so the artifact records the
+    run head commit, never the recovered tag commit."""
+
+    jobs = _workflow()["jobs"]
+    for name in ("recovery-publish", "recovery-attach-release-assets"):
+        recapture = _step_id(jobs[name], "recapture-bundle")
+        assert recapture["env"]["EXPECTED_SHA"] == "${{ github.sha }}"
+
+
+def test_release_workflow_guard_rejects_a_tag_bound_recovery_artifact() -> None:
+    workflow = copy.deepcopy(_workflow())
+    _step_id(workflow["jobs"]["recovery-publish"], "recapture-bundle")["env"].__setitem__(
+        "EXPECTED_SHA", "${{ needs.recovery-target.outputs.tag_sha }}"
+    )
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
