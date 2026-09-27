@@ -62,6 +62,28 @@ STEP_IDS = {
         "recapture-release",
         "upload-release-assets",
     ],
+    "recovery-build": [
+        "checkout-release",
+        "setup-python",
+        "install-version-verifier",
+        "recovery-target",
+        "recovery-identity",
+        "install-build-toolchain",
+        "build-bundle",
+        "bundle-identity",
+        "upload-bundle",
+    ],
+    "recovery-publish": [
+        "checkout-release",
+        "setup-python",
+        "install-version-verifier",
+        "verify-target",
+        "recapture-bundle",
+        "download-bundle",
+        "verify-bundle",
+        "recapture-release",
+        "publish-pypi",
+    ],
 }
 
 RUN_SHA256 = {
@@ -124,6 +146,39 @@ RUN_SHA256 = {
     ("attach-release-assets", "upload-release-assets"): (
         "ff15b544c7d628000a1de3bdab0038d3a3d2bd9fc8ed663e06b2caa2df1c8dfa"
     ),
+    ("recovery-build", "install-version-verifier"): (
+        "8565e51cb1bd84bbf3a777223bac3f3efa83bd95556877519dd50fa58ea5c82b"
+    ),
+    ("recovery-build", "recovery-target"): (
+        "d93e1be48415f691d88a59f4a23c4cd5afecf0241085182cd9e1bd5f650a0038"
+    ),
+    ("recovery-build", "recovery-identity"): (
+        "491f3f484698f808dd183a3f67680db3c6c5bb1047c292cd1974bd4b243edb1c"
+    ),
+    ("recovery-build", "install-build-toolchain"): (
+        "308f0e905761d27d044cca35cfdcaa6f194bdf59e7badfc279695491b922e4c0"
+    ),
+    ("recovery-build", "build-bundle"): (
+        "0465990c618430b3d461d1803937cfa82de00a2e34140fef77c735417dcdc178"
+    ),
+    ("recovery-build", "bundle-identity"): (
+        "171ec83824da0a6306c4033fbdeebabbd1d30a9e2ea5b9c5550cbe4c154732f1"
+    ),
+    ("recovery-publish", "install-version-verifier"): (
+        "8565e51cb1bd84bbf3a777223bac3f3efa83bd95556877519dd50fa58ea5c82b"
+    ),
+    ("recovery-publish", "verify-target"): (
+        "28ef3cbcbb8e2f484928e4520d866a1065076eb4c39e08378c301eb255bf314f"
+    ),
+    ("recovery-publish", "recapture-bundle"): (
+        "0a718155a8773a8282407d39788398ad5198fea7196b15a8cd2ec7d9355ce7a6"
+    ),
+    ("recovery-publish", "verify-bundle"): (
+        "8180a3c9bb8a39e094122b121f875e84cf1cdc5b1a0e4d790e86602e0fc1ab72"
+    ),
+    ("recovery-publish", "recapture-release"): (
+        "0a92935a9a80520b7938db042ee79d6149dac7747592bc0a99864357b54a9895"
+    ),
 }
 
 RELEASE_OUTPUTS = {
@@ -136,9 +191,32 @@ RELEASE_OUTPUTS = {
     "release_assets_sha256": "${{ steps.release-identity.outputs.release_assets_sha256 }}",
 }
 
+DISPATCH_INPUTS = {
+    "tag": {
+        "description": (
+            "Existing release tag to republish, for example v0.4.2. The tag must "
+            "already exist and resolve to one immutable commit."
+        ),
+        "required": "true",
+        "type": "string",
+    },
+    "source_sha": {
+        "description": (
+            "Optional commit the tag must resolve to. Leave empty to publish "
+            "whatever commit the tag currently resolves to."
+        ),
+        "required": "false",
+        "type": "string",
+        "default": "",
+    },
+}
+
 WORKFLOW_METADATA = {
     "name": "Release",
-    "on": {"push": {"branches": ["main"]}},
+    "on": {
+        "push": {"branches": ["main"]},
+        "workflow_dispatch": {"inputs": DISPATCH_INPUTS},
+    },
     "concurrency": {
         "group": "${{ github.workflow }}-${{ github.ref }}",
         "cancel-in-progress": "false",
@@ -146,8 +224,31 @@ WORKFLOW_METADATA = {
     "permissions": {"contents": "read"},
 }
 
+RECOVERY_OUTPUTS = {
+    "tag_name": "${{ steps.recovery-target.outputs.tag_name }}",
+    "tag_sha": "${{ steps.recovery-target.outputs.tag_sha }}",
+    "version": "${{ steps.recovery-target.outputs.version }}",
+    "release_id": "${{ steps.recovery-identity.outputs.release_id }}",
+    "release_node_id": "${{ steps.recovery-identity.outputs.release_node_id }}",
+    "release_assets_sha256": "${{ steps.recovery-identity.outputs.release_assets_sha256 }}",
+    "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+    "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+    "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
+}
+
+DISPATCH_CONDITION = "github.event_name == 'workflow_dispatch'"
+PYPI_ENVIRONMENT = {
+    "name": "pypi",
+    "url": "https://pypi.org/p/dcc-mcp-tiled",
+}
+PUBLISHER_JOBS = ("publish", "recovery-publish")
+IDENTITY_RECAPTURE_JOBS = ("publish", "attach-release-assets", "recovery-publish")
+NON_RELEASE_PLEASE_JOBS = ("build", "publish", "attach-release-assets")
+RECOVERY_JOBS = ("recovery-build", "recovery-publish")
+
 JOB_METADATA = {
     "release-please": {
+        "if": "github.event_name == 'push'",
         "runs-on": "ubuntu-latest",
         "permissions": {"contents": "write", "pull-requests": "write"},
         "outputs": RELEASE_OUTPUTS,
@@ -167,10 +268,7 @@ JOB_METADATA = {
         "needs": ["release-please", "build"],
         "if": "needs.release-please.outputs.release_created == 'true'",
         "runs-on": "ubuntu-latest",
-        "environment": {
-            "name": "pypi",
-            "url": "https://pypi.org/p/dcc-mcp-tiled",
-        },
+        "environment": PYPI_ENVIRONMENT,
         "permissions": {"actions": "read", "contents": "read", "id-token": "write"},
     },
     "attach-release-assets": {
@@ -182,9 +280,40 @@ JOB_METADATA = {
         "runs-on": "ubuntu-latest",
         "permissions": {"actions": "read", "contents": "write"},
     },
+    "recovery-build": {
+        "if": DISPATCH_CONDITION,
+        "runs-on": "ubuntu-latest",
+        "permissions": {"contents": "read"},
+        "outputs": RECOVERY_OUTPUTS,
+    },
+    "recovery-publish": {
+        "needs": "recovery-build",
+        "if": DISPATCH_CONDITION,
+        "runs-on": "ubuntu-latest",
+        "environment": PYPI_ENVIRONMENT,
+        "permissions": {"actions": "read", "contents": "read", "id-token": "write"},
+    },
 }
 
 STEP_NAMES = {
+    ("recovery-build", "install-version-verifier"): "Install the semantic version verifier",
+    ("recovery-build", "recovery-target"): "Resolve the immutable recovery target",
+    ("recovery-build", "recovery-identity"): (
+        "Freeze the exact GitHub Release entity and asset baseline"
+    ),
+    ("recovery-build", "install-build-toolchain"): "Install reviewed build toolchain",
+    ("recovery-build", "build-bundle"): "Build and validate distributions",
+    ("recovery-build", "bundle-identity"): "Freeze release bundle identity",
+    ("recovery-build", "upload-bundle"): "Upload immutable release bundle",
+    ("recovery-publish", "install-version-verifier"): "Install the semantic version verifier",
+    ("recovery-publish", "verify-target"): "Verify immutable release target",
+    ("recovery-publish", "recapture-bundle"): ("Recapture exact GitHub Actions artifact identity"),
+    ("recovery-publish", "download-bundle"): "Download immutable release bundle",
+    ("recovery-publish", "verify-bundle"): "Verify release artifacts",
+    ("recovery-publish", "recapture-release"): (
+        "Recapture remote release identity immediately before mutation"
+    ),
+    ("recovery-publish", "publish-pypi"): "Publish to PyPI with trusted publishing",
     ("release-please", "target"): "Resolve immutable release target",
     ("release-please", "checkout-release"): "Check out the exact release target",
     ("release-please", "setup-python"): "Set up Python for the release identity guard",
@@ -239,10 +368,21 @@ ACTION_NAMES = {
     ("attach-release-assets", "checkout-release"): "actions/checkout",
     ("attach-release-assets", "setup-python"): "actions/setup-python",
     ("attach-release-assets", "download-bundle"): "actions/download-artifact",
+    ("recovery-build", "checkout-release"): "actions/checkout",
+    ("recovery-build", "setup-python"): "actions/setup-python",
+    ("recovery-build", "upload-bundle"): "actions/upload-artifact",
+    ("recovery-publish", "checkout-release"): "actions/checkout",
+    ("recovery-publish", "setup-python"): "actions/setup-python",
+    ("recovery-publish", "download-bundle"): "actions/download-artifact",
+    ("recovery-publish", "publish-pypi"): "pypa/gh-action-pypi-publish",
 }
 
 NEEDS_CHECKOUT = {
     "ref": "${{ needs.release-please.outputs.tag_name }}",
+    "fetch-depth": "0",
+}
+RECOVERY_CHECKOUT = {
+    "ref": "${{ inputs.tag }}",
     "fetch-depth": "0",
 }
 ACTION_INPUTS = {
@@ -282,12 +422,37 @@ ACTION_INPUTS = {
         "artifact-ids": "${{ needs.build.outputs.bundle_artifact_id }}",
         "path": "release-bundle",
     },
+    ("recovery-build", "checkout-release"): RECOVERY_CHECKOUT,
+    ("recovery-build", "setup-python"): {"python-version": "3.12"},
+    ("recovery-build", "upload-bundle"): {
+        "name": "release-bundle",
+        "path": "release-bundle/",
+        "if-no-files-found": "error",
+        "compression-level": "0",
+        "retention-days": "7",
+    },
+    ("recovery-publish", "checkout-release"): RECOVERY_CHECKOUT,
+    ("recovery-publish", "setup-python"): {"python-version": "3.12"},
+    ("recovery-publish", "download-bundle"): {
+        "artifact-ids": "${{ needs.recovery-build.outputs.bundle_artifact_id }}",
+        "path": "release-bundle",
+    },
+    ("recovery-publish", "publish-pypi"): {
+        "packages-dir": "release-bundle/dist",
+        "verbose": "true",
+        "print-hash": "true",
+    },
 }
 
 NEEDS_TARGET_ENV = {
     "EXPECTED_TAG": "${{ needs.release-please.outputs.tag_name }}",
     "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
     "EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}",
+}
+NEEDS_RECOVERY_ENV = {
+    "EXPECTED_TAG": "${{ needs.recovery-build.outputs.tag_name }}",
+    "EXPECTED_SHA": "${{ needs.recovery-build.outputs.tag_sha }}",
+    "EXPECTED_VERSION": "${{ needs.recovery-build.outputs.version }}",
 }
 STEP_SHELLS = {
     ("release-please", "target"),
@@ -304,6 +469,13 @@ STEP_SHELLS = {
     ("attach-release-assets", "verify-bundle"),
     ("attach-release-assets", "recapture-release"),
     ("attach-release-assets", "upload-release-assets"),
+    ("recovery-build", "recovery-target"),
+    ("recovery-build", "recovery-identity"),
+    ("recovery-build", "bundle-identity"),
+    ("recovery-publish", "verify-target"),
+    ("recovery-publish", "recapture-bundle"),
+    ("recovery-publish", "verify-bundle"),
+    ("recovery-publish", "recapture-release"),
 }
 
 RELEASE_CONDITION = "steps.release.outputs.release_created == 'true'"
@@ -320,6 +492,17 @@ RECAPTURE_ENV = {
     "EXPECTED_RELEASE_ID": "${{ needs.release-please.outputs.release_id }}",
     "EXPECTED_RELEASE_NODE_ID": "${{ needs.release-please.outputs.release_node_id }}",
     "EXPECTED_RELEASE_ASSETS_SHA256": ("${{ needs.release-please.outputs.release_assets_sha256 }}"),
+}
+
+RECOVERY_RECAPTURE_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "EXPECTED_TAG": "${{ needs.recovery-build.outputs.tag_name }}",
+    "EXPECTED_SHA": "${{ needs.recovery-build.outputs.tag_sha }}",
+    "EXPECTED_VERSION": "${{ needs.recovery-build.outputs.version }}",
+    "EXPECTED_MANIFEST_SHA256": ("${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}"),
+    "EXPECTED_RELEASE_ID": "${{ needs.recovery-build.outputs.release_id }}",
+    "EXPECTED_RELEASE_NODE_ID": "${{ needs.recovery-build.outputs.release_node_id }}",
+    "EXPECTED_RELEASE_ASSETS_SHA256": ("${{ needs.recovery-build.outputs.release_assets_sha256 }}"),
 }
 
 RECAPTURE_COMMAND = [
@@ -351,6 +534,14 @@ ARTIFACT_RECAPTURE_ENV = {
     "EXPECTED_ARTIFACT_DIGEST": "${{ needs.build.outputs.bundle_artifact_digest }}",
     "EXPECTED_RUN_ID": "${{ github.run_id }}",
     "EXPECTED_SHA": "${{ needs.release-please.outputs.tag_sha }}",
+}
+
+RECOVERY_ARTIFACT_RECAPTURE_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "EXPECTED_ARTIFACT_ID": "${{ needs.recovery-build.outputs.bundle_artifact_id }}",
+    "EXPECTED_ARTIFACT_DIGEST": "${{ needs.recovery-build.outputs.bundle_artifact_digest }}",
+    "EXPECTED_RUN_ID": "${{ github.run_id }}",
+    "EXPECTED_SHA": "${{ github.sha }}",
 }
 
 ARTIFACT_RECAPTURE_COMMAND = [
@@ -412,6 +603,35 @@ STEP_ENVS = {
     },
     ("attach-release-assets", "recapture-release"): RECAPTURE_ENV,
     ("attach-release-assets", "upload-release-assets"): UPLOAD_ENV,
+    ("recovery-build", "recovery-target"): {
+        "RECOVERY_TAG": "${{ inputs.tag }}",
+        "RECOVERY_SOURCE_SHA": "${{ inputs.source_sha }}",
+    },
+    ("recovery-build", "recovery-identity"): {
+        "GH_TOKEN": "${{ github.token }}",
+        "EXPECTED_TAG": "${{ steps.recovery-target.outputs.tag_name }}",
+        "EXPECTED_SHA": "${{ steps.recovery-target.outputs.tag_sha }}",
+    },
+    ("recovery-build", "build-bundle"): {
+        "EXPECTED_VERSION": "${{ steps.recovery-target.outputs.version }}"
+    },
+    ("recovery-publish", "verify-target"): NEEDS_RECOVERY_ENV,
+    ("recovery-publish", "recapture-bundle"): RECOVERY_ARTIFACT_RECAPTURE_ENV,
+    ("recovery-publish", "verify-bundle"): {
+        "EXPECTED_MANIFEST_SHA256": ("${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}")
+    },
+    ("recovery-publish", "recapture-release"): RECOVERY_RECAPTURE_ENV,
+}
+
+ARTIFACT_RECAPTURE_ENVS = {
+    "publish": ARTIFACT_RECAPTURE_ENV,
+    "attach-release-assets": ARTIFACT_RECAPTURE_ENV,
+    "recovery-publish": RECOVERY_ARTIFACT_RECAPTURE_ENV,
+}
+RELEASE_RECAPTURE_ENVS = {
+    "publish": RECAPTURE_ENV,
+    "attach-release-assets": RECAPTURE_ENV,
+    "recovery-publish": RECOVERY_RECAPTURE_ENV,
 }
 
 UPLOAD_COMMAND = [
@@ -566,7 +786,21 @@ def _verify_action_pins(jobs: dict[str, Any]) -> None:
             _require(ACTION_PINS.get(action) == commit, f"unexpected release action: {action}")
             seen.append(action)
     _require(seen.count("googleapis/release-please-action") == 1, "release creator is ambiguous")
-    _require(seen.count("pypa/gh-action-pypi-publish") == 1, "PyPI publisher is ambiguous")
+    _require(
+        seen.count("pypa/gh-action-pypi-publish") == len(PUBLISHER_JOBS),
+        "PyPI publisher is ambiguous",
+    )
+    for job_name, job in jobs.items():
+        publishers = [
+            step
+            for step in job["steps"]
+            if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@")
+        ]
+        expected_publishers = 1 if job_name in PUBLISHER_JOBS else 0
+        _require(
+            len(publishers) == expected_publishers,
+            f"{job_name} PyPI publisher is ambiguous",
+        )
 
 
 def _verify_no_hidden_mutation(jobs: dict[str, Any]) -> None:
@@ -642,19 +876,34 @@ def verify_workflow(workflow: dict[str, Any]) -> None:
     )
     attach_gate = release_gate + " && needs.publish.result == 'success'"
     _require(attach.get("if") == attach_gate, "release asset publish-success gate changed")
-    for job_name in ("build", "publish", "attach-release-assets"):
+
+    recovery_build = typed_jobs["recovery-build"]
+    recovery_publish = typed_jobs["recovery-publish"]
+    _require(release.get("if") == "github.event_name == 'push'", "release creator trigger changed")
+    _require(recovery_build.get("if") == DISPATCH_CONDITION, "recovery build trigger changed")
+    _require(
+        recovery_publish.get("needs") == "recovery-build",
+        "recovery publish dependency changed",
+    )
+    _require(recovery_publish.get("if") == DISPATCH_CONDITION, "recovery publish trigger changed")
+    _require(
+        recovery_publish.get("environment") == PYPI_ENVIRONMENT,
+        "recovery publish environment changed",
+    )
+
+    for job_name in (*NON_RELEASE_PLEASE_JOBS, *RECOVERY_JOBS):
         for step in steps[job_name]:
             _require("if" not in step, f"{job_name} step condition changed")
             _require("continue-on-error" not in step, f"{job_name} failure may be ignored")
 
-    for job_name in ("publish", "attach-release-assets"):
+    for job_name in IDENTITY_RECAPTURE_JOBS:
         artifact = _step_by_id(steps[job_name], "recapture-bundle")
         _require(
             set(artifact) == {"name", "id", "env", "shell", "run"},
             "artifact recapture shape changed",
         )
         _require(
-            artifact.get("env") == ARTIFACT_RECAPTURE_ENV,
+            artifact.get("env") == ARTIFACT_RECAPTURE_ENVS[job_name],
             "artifact recapture identity inputs changed",
         )
         _require(artifact.get("shell") == "bash", "artifact recapture shell changed")
@@ -665,28 +914,33 @@ def verify_workflow(workflow: dict[str, Any]) -> None:
 
         recapture = _step_by_id(steps[job_name], "recapture-release")
         _require(set(recapture) == {"name", "id", "env", "shell", "run"}, "recapture shape changed")
-        _require(recapture.get("env") == RECAPTURE_ENV, "recapture identity inputs changed")
+        _require(
+            recapture.get("env") == RELEASE_RECAPTURE_ENVS[job_name],
+            "recapture identity inputs changed",
+        )
         _require(recapture.get("shell") == "bash", "recapture shell changed")
         _require(_command(recapture) == RECAPTURE_COMMAND, "recapture executable body changed")
 
-    publisher = _step_by_id(steps["publish"], "publish-pypi")
-    _require(
-        "if" not in publisher and "run" not in publisher, "PyPI publisher may bypass recapture"
-    )
-    _require(
-        publisher.get("uses")
-        == "pypa/gh-action-pypi-publish@" + ACTION_PINS["pypa/gh-action-pypi-publish"],
-        "PyPI publisher step changed",
-    )
-    _require(
-        publisher.get("with")
-        == {
-            "packages-dir": "release-bundle/dist",
-            "verbose": "true",
-            "print-hash": "true",
-        },
-        "PyPI publisher inputs changed",
-    )
+    for job_name in PUBLISHER_JOBS:
+        publisher = _step_by_id(steps[job_name], "publish-pypi")
+        _require(
+            "if" not in publisher and "run" not in publisher,
+            "PyPI publisher may bypass recapture",
+        )
+        _require(
+            publisher.get("uses")
+            == "pypa/gh-action-pypi-publish@" + ACTION_PINS["pypa/gh-action-pypi-publish"],
+            "PyPI publisher step changed",
+        )
+        _require(
+            publisher.get("with")
+            == {
+                "packages-dir": "release-bundle/dist",
+                "verbose": "true",
+                "print-hash": "true",
+            },
+            "PyPI publisher inputs changed",
+        )
     uploader = _step_by_id(steps["attach-release-assets"], "upload-release-assets")
     _require(set(uploader) == {"name", "id", "env", "shell", "run"}, "uploader shape changed")
     _require(uploader.get("env") == UPLOAD_ENV, "uploader identity inputs changed")
