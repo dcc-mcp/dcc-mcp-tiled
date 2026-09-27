@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.5.1](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.5.0...v0.5.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* attach recovery assets and reject duplicate release workflow keys ([b61b1a3](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/b61b1a3e9bb8b8eb584e0c6e90f6d93af9154124))
+* bind the recovery artifact recapture to the run head commit ([4c3a9b0](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/4c3a9b01d8416b5f9aa001388e6aafb6e23e3155))
+* reject duplicate release workflow keys and complete the recovery chain ([8b22ed4](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/8b22ed41b8dae633a81b321edc4e96e4c708ce86))
+
 ## [0.5.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.2...v0.5.0) (2026-09-27)
 
 
