@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [0.5.0](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.2...v0.5.0) (2026-09-27)
+
+
+### Features
+
+* add parameterized PyPI republish recovery channel ([0064764](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/00647647d1c165ac459b5b52c391ac756069be99))
+
+
+### Bug Fixes
+
+* remove the duplicated recovery jobs from the release workflow ([2e40a33](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/2e40a33e72a561829c91a48be97861d54ab8c60c))
+
 ## [0.4.2](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.4.1...v0.4.2) (2026-08-27)
 
 
