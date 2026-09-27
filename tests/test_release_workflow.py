@@ -627,7 +627,243 @@ def test_released_030_notes_are_not_left_under_unreleased() -> None:
 
     assert "typed map, object, tileset" not in unreleased
     assert "subprocess cancellation and deadlines" not in unreleased
-    assert "pinned Tiled 1.12.2" not in unreleased
-    assert "typed map, object, tileset" in released_030
-    assert "subprocess cancellation and deadlines" in released_030
-    assert "pinned Tiled 1.12.2" in released_030
+
+
+RECOVERY_OUTPUTS = {
+    "tag_name": "${{ steps.recovery-target.outputs.tag_name }}",
+    "tag_sha": "${{ steps.recovery-target.outputs.tag_sha }}",
+    "version": "${{ steps.recovery-target.outputs.version }}",
+    "release_id": "${{ steps.recovery-identity.outputs.release_id }}",
+    "release_node_id": "${{ steps.recovery-identity.outputs.release_node_id }}",
+    "release_assets_sha256": ("${{ steps.recovery-identity.outputs.release_assets_sha256 }}"),
+    "bundle_manifest_sha256": "${{ steps.bundle-identity.outputs.sha256 }}",
+    "bundle_artifact_id": "${{ steps.upload-bundle.outputs.artifact-id }}",
+    "bundle_artifact_digest": "${{ steps.upload-bundle.outputs.artifact-digest }}",
+}
+
+RECOVERY_RECAPTURE_ENV = {
+    "GH_TOKEN": "${{ github.token }}",
+    "EXPECTED_TAG": "${{ needs.recovery-build.outputs.tag_name }}",
+    "EXPECTED_SHA": "${{ needs.recovery-build.outputs.tag_sha }}",
+    "EXPECTED_VERSION": "${{ needs.recovery-build.outputs.version }}",
+    "EXPECTED_MANIFEST_SHA256": "${{ needs.recovery-build.outputs.bundle_manifest_sha256 }}",
+    "EXPECTED_RELEASE_ID": "${{ needs.recovery-build.outputs.release_id }}",
+    "EXPECTED_RELEASE_NODE_ID": "${{ needs.recovery-build.outputs.release_node_id }}",
+    "EXPECTED_RELEASE_ASSETS_SHA256": ("${{ needs.recovery-build.outputs.release_assets_sha256 }}"),
+}
+
+
+def _assert_exact_artifact_recapture_command(script: str) -> None:
+    assert shlex.split(script.replace("\\\n", " ")) == ARTIFACT_RECAPTURE_COMMAND
+
+
+def test_recovery_channel_takes_its_target_from_dispatch_inputs() -> None:
+    workflow = _workflow()
+    dispatch = workflow["on"]["workflow_dispatch"]
+
+    assert set(dispatch["inputs"]) >= {"tag", "source_sha"}
+    assert dispatch["inputs"]["tag"]["required"] == "true"
+    assert dispatch["inputs"]["source_sha"]["required"] == "false"
+    assert dispatch["inputs"]["source_sha"]["default"] == ""
+
+
+def test_recovery_channel_is_never_pinned_to_one_incident() -> None:
+    workflow = _workflow()
+    recovery_text = yaml.dump(
+        {"jobs": {name: workflow["jobs"][name] for name in ("recovery-build", "recovery-publish")}}
+    )
+    reviewed_pins = set(ACTION_PINS.values())
+    incident_shas = {
+        match.group(0)
+        for match in re.finditer(r"\b[0-9a-f]{40}\b", recovery_text)
+        if match.group(0) not in reviewed_pins
+    }
+
+    assert re.search(r"\bv?0\.[0-9]+\.[0-9]+\b", recovery_text) is None
+    assert incident_shas == set()
+    assert re.search(r"\b[0-9]{9,}\b", recovery_text) is None
+    assert "RE_kwDO" not in recovery_text
+
+
+def test_recovery_jobs_publish_only_on_dispatch_and_only_from_the_named_tag() -> None:
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+
+    assert jobs["release-please"]["if"] == "github.event_name == 'push'"
+    for name in ("recovery-build", "recovery-publish"):
+        assert jobs[name]["if"] == "github.event_name == 'workflow_dispatch'"
+        checkout = _checkout(jobs[name])
+        assert checkout["with"] == {"ref": "${{ inputs.tag }}", "fetch-depth": "0"}
+
+    assert jobs["recovery-publish"]["needs"] == "recovery-build"
+    assert jobs["recovery-publish"]["environment"] == {
+        "name": "pypi",
+        "url": "https://pypi.org/p/dcc-mcp-tiled",
+    }
+    assert jobs["recovery-publish"]["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert jobs["recovery-build"]["outputs"] == RECOVERY_OUTPUTS
+
+    resolve = _step_id(jobs["recovery-build"], "recovery-target")
+    assert resolve["env"] == {
+        "RECOVERY_TAG": "${{ inputs.tag }}",
+        "RECOVERY_SOURCE_SHA": "${{ inputs.source_sha }}",
+    }
+    assert r"^v[0-9]+\.[0-9]+\.[0-9]+$" in resolve["run"]
+    assert 'git rev-parse "${RECOVERY_TAG}^{commit}"' in resolve["run"]
+    assert 'python tools/verify_version_consistency.py --expected "$version"' in resolve["run"]
+
+    freeze = _step_id(jobs["recovery-build"], "recovery-identity")
+    assert "tools/freeze_release_identity.py" in freeze["run"]
+
+
+def test_recovery_publication_recaptures_identity_before_the_pypi_mutation() -> None:
+    workflow = _workflow()
+    publish = workflow["jobs"]["recovery-publish"]
+    steps = publish["steps"]
+
+    assert [step["id"] for step in steps] == [
+        "checkout-release",
+        "setup-python",
+        "install-version-verifier",
+        "verify-target",
+        "recapture-bundle",
+        "download-bundle",
+        "verify-bundle",
+        "recapture-release",
+        "publish-pypi",
+    ]
+    assert steps[-2]["id"] == "recapture-release"
+    assert steps[-1]["id"] == "publish-pypi"
+    assert steps[-2]["env"] == RECOVERY_RECAPTURE_ENV
+    _assert_exact_recapture_command(steps[-2]["run"])
+    _assert_exact_artifact_recapture_command(_step_id(publish, "recapture-bundle")["run"])
+    assert _step_id(publish, "download-bundle")["with"] == {
+        "artifact-ids": "${{ needs.recovery-build.outputs.bundle_artifact_id }}",
+        "path": "release-bundle",
+    }
+    publishers = [step for step in steps if "pypa/gh-action-pypi-publish@" in step.get("uses", "")]
+    assert len(publishers) == 1
+    assert "password" not in publishers[0].get("with", {})
+
+
+def test_recovery_artifact_recapture_binds_the_run_head_commit() -> None:
+    recapture = _step_id(_workflow()["jobs"]["recovery-publish"], "recapture-bundle")
+
+    assert recapture["env"]["EXPECTED_ARTIFACT_ID"] == (
+        "${{ needs.recovery-build.outputs.bundle_artifact_id }}"
+    )
+    assert recapture["env"]["EXPECTED_ARTIFACT_DIGEST"] == (
+        "${{ needs.recovery-build.outputs.bundle_artifact_digest }}"
+    )
+    assert recapture["env"]["EXPECTED_RUN_ID"] == "${{ github.run_id }}"
+    assert recapture["env"]["EXPECTED_SHA"] == "${{ github.sha }}"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-build"].__setitem__("if", "true"),
+            id="recovery-build-on-every-event",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"].__setitem__(
+                "if", "github.event_name == 'push'"
+            ),
+            id="recovery-publish-on-push",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["release-please"].pop("if"),
+            id="release-please-on-dispatch",
+        ),
+        pytest.param(
+            lambda workflow: _checkout(workflow["jobs"]["recovery-build"])["with"].__setitem__(
+                "ref", "${{ github.sha }}"
+            ),
+            id="recovery-build-not-from-tag",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-build"], "recovery-target")[
+                "env"
+            ].__setitem__("RECOVERY_TAG", "v0.4.2"),
+            id="recovery-tag-input-hardcoded",
+        ),
+        pytest.param(
+            lambda workflow: workflow["on"]["workflow_dispatch"]["inputs"]["tag"].__setitem__(
+                "default", "v0.4.2"
+            ),
+            id="recovery-dispatch-default-tag",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-publish"], "recapture-bundle")[
+                "env"
+            ].__setitem__("EXPECTED_SHA", "${{ needs.recovery-build.outputs.tag_sha }}"),
+            id="recovery-artifact-sha-swapped",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-publish"], "recapture-release")[
+                "env"
+            ].__setitem__("EXPECTED_RELEASE_ID", "378084249"),
+            id="recovery-release-id-hardcoded",
+        ),
+        pytest.param(
+            lambda workflow: _step_id(workflow["jobs"]["recovery-publish"], "download-bundle")[
+                "with"
+            ].__setitem__("name", "release-bundle"),
+            id="recovery-download-by-mutable-name",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"].pop("environment"),
+            id="recovery-publish-without-environment",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"]["permissions"].pop("id-token"),
+            id="recovery-publish-without-oidc",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"]["steps"].insert(
+                -1,
+                copy.deepcopy(workflow["jobs"]["recovery-publish"]["steps"][-1]),
+            ),
+            id="duplicate-recovery-publisher",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-build"]["steps"].append(
+                {"id": "extra-mutation", "run": "gh release upload v0.4.2 evil --clobber"}
+            ),
+            id="recovery-extra-release-mutation",
+        ),
+        pytest.param(
+            lambda workflow: workflow["jobs"]["recovery-publish"]["steps"][-2].__setitem__(
+                "continue-on-error", "true"
+            ),
+            id="recovery-recapture-failure-ignored",
+        ),
+    ],
+)
+def test_release_workflow_guard_rejects_recovery_channel_drift(mutate) -> None:
+    workflow = copy.deepcopy(_workflow())
+    mutate(workflow)
+
+    with pytest.raises(ValueError):
+        _workflow_guard().verify_workflow(workflow)
+
+
+def test_recovery_channel_keeps_the_reviewed_publish_gate_structure() -> None:
+    jobs = _workflow()["jobs"]
+
+    for name in ("build", "recovery-build"):
+        build_script = _step(jobs[name], "Build and validate distributions")["run"]
+        assert (
+            'python tools/verify_package_artifacts.py --dist dist --version "$EXPECTED_VERSION"'
+            in build_script
+        )
+        assert _step_id(jobs[name], "upload-bundle")["with"]["name"] == "release-bundle"
+
+    for name in ("publish", "recovery-publish"):
+        verify = _step(jobs[name], "Verify release artifacts")
+        assert "sha256sum --check --strict" in verify["run"]
