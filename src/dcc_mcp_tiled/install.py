@@ -16,13 +16,19 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from dcc_mcp_core import __version__ as core_version
-from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
 
 from .__version__ import __version__
 from .bridge import TiledCli, TiledError, TiledLaunchError, TiledTimeoutError
 
 MIN_CORE_VERSION = "0.20.14"
 MIN_TILED_VERSION = "1.10.0"
+
+# Version of the report document itself, which the published Install SOP schema
+# pins with `const: 1`. It is NOT `INSTALL_SOP_SCHEMA_VERSION`: that constant is
+# the published schema *artifact* revision (`adapter-install-sop-vN.schema.json`)
+# and is deliberately decoupled from this field, so using it here emitted
+# `schema_version: 2` and failed validation once Core shipped artifact v2.
+INSTALL_SOP_REPORT_SCHEMA_VERSION = 1
 INSTALL_GUIDE_URL = "https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-tiled/main/install.md"
 _VERSION_COMPONENT = r"(?:0|[1-9][0-9]{0,5})"
 _FINAL_RELEASE = re.compile(
@@ -371,7 +377,7 @@ def _report(
         }
     ]
     return {
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": INSTALL_SOP_REPORT_SCHEMA_VERSION,
         "legacy_schema_version": "1.0",
         "status": "ok" if directly_usable else "failed",
         "legacy_status": "ok" if directly_usable else "error" if exit_code == 40 else "not_ready",

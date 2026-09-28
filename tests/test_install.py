@@ -23,16 +23,33 @@ INSTALL_SOP_VALIDATOR = Draft202012Validator(INSTALL_SOP_SCHEMA)
 Draft202012Validator.check_schema(INSTALL_SOP_SCHEMA)
 
 
+def test_report_schema_version_is_not_the_schema_artifact_revision() -> None:
+    """The report field and the schema artifact revision are separate things.
+
+    Core publishes its Install SOP schema as an immutable `-vN` artifact and
+    keeps the report document's own `schema_version` pinned at 1. Collapsing the
+    two emitted `schema_version: 2` as soon as Core shipped artifact v2, which
+    failed the schema's `const: 1` validation.
+    """
+    assert install.INSTALL_SOP_REPORT_SCHEMA_VERSION == 1
+    assert INSTALL_SOP_SCHEMA["properties"]["schema_version"]["const"] == (
+        install.INSTALL_SOP_REPORT_SCHEMA_VERSION
+    )
+
+
 def test_install_reports_consume_the_published_core_schema_resource() -> None:
-    schema_resource = files("dcc_mcp_core").joinpath("schemas/adapter-install-sop-v1.schema.json")
+    """Tiled validates against Core's published schema, never a vendored copy.
+
+    The artifact revision and its byte digest belong to Core and change whenever
+    Core ships a new schema revision, so they are derived from Core's own
+    declaration instead of being pinned here. Pinning them made this suite fail
+    on every Core revision bump without anything in Tiled having changed.
+    """
+    schema_name = f"adapter-install-sop-v{INSTALL_SOP_SCHEMA_VERSION}.schema.json"
+    schema_resource = files("dcc_mcp_core").joinpath(f"schemas/{schema_name}")
     schema_bytes = schema_resource.read_bytes()
 
-    assert not (ROOT / "tests/fixtures/adapter-install-sop-v1.schema.json").exists()
-    assert INSTALL_SOP_SCHEMA_VERSION == 1
-    assert len(schema_bytes) == 4261
-    assert hashlib.sha256(schema_bytes).hexdigest() == (
-        "3ca25788439917b4d4c0617230a762f9797756b5b54f45c8c4149f975b90f904"
-    )
+    assert not (ROOT / f"tests/fixtures/{schema_name}").exists()
     assert b"\r\n" not in schema_bytes
     assert load_install_sop_schema() == json.loads(schema_bytes)
 
