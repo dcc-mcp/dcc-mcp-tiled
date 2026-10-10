@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [0.5.2](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.5.1...v0.5.2) (2026-10-10)
+
+
+### Documentation
+
+* **readme:** add the generated DCC-MCP host matrix pointer ([#21](https://github.com/dcc-mcp/dcc-mcp-tiled/issues/21)) ([449db42](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/449db4244caf08bfed41d7088f7053508cd9da6e))
+* refresh the generated DCC-MCP host matrix pointer ([#23](https://github.com/dcc-mcp/dcc-mcp-tiled/issues/23)) ([6351eb5](https://github.com/dcc-mcp/dcc-mcp-tiled/commit/6351eb5820b4c50009d29173451c726cea293250))
+
 ## [0.5.1](https://github.com/dcc-mcp/dcc-mcp-tiled/compare/v0.5.0...v0.5.1) (2026-09-27)
 
 
