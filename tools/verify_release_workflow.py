@@ -22,6 +22,7 @@ ACTION_PINS = {
 
 STEP_IDS = {
     "release-please": [
+        "require-release-token",
         "release",
         "target",
         "checkout-release",
@@ -104,6 +105,10 @@ STEP_IDS = {
 }
 
 RUN_SHA256 = {
+    (
+        "release-please",
+        "require-release-token",
+    ): "d38534eec2d7e22a3266e633552fd91434fadcca9e2264f2f64d37db2e25b8f5",
     (
         "release-please",
         "target",
@@ -346,6 +351,7 @@ JOB_METADATA = {
 }
 
 STEP_NAMES = {
+    ("release-please", "require-release-token"): "Require organization release token",
     ("release-please", "target"): "Resolve immutable release target",
     ("release-please", "checkout-release"): "Check out the exact release target",
     ("release-please", "setup-python"): "Set up Python for the release identity guard",
@@ -478,7 +484,7 @@ BUNDLE_UPLOAD_INPUTS = {
 }
 ACTION_INPUTS = {
     ("release-please", "release"): {
-        "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
+        "token": "${{ secrets.PERSONAL_ACCESS_TOKEN }}",
         "config-file": "release-please-config.json",
         "manifest-file": ".release-please-manifest.json",
     },
@@ -541,6 +547,7 @@ NEEDS_TARGET_ENV = {
     "EXPECTED_VERSION": "${{ needs.release-please.outputs.version }}",
 }
 STEP_SHELLS = {
+    ("release-please", "require-release-token"),
     ("release-please", "target"),
     ("release-please", "verify-target"),
     ("release-please", "release-identity"),
@@ -572,7 +579,7 @@ STEP_SHELLS = {
 
 RELEASE_CONDITION = "steps.release.outputs.release_created == 'true'"
 STEP_CONDITIONS = {
-    ("release-please", step_id): RELEASE_CONDITION for step_id in STEP_IDS["release-please"][1:]
+    ("release-please", step_id): RELEASE_CONDITION for step_id in STEP_IDS["release-please"][2:]
 }
 
 RECAPTURE_ENV = {
@@ -673,6 +680,9 @@ RECOVERY_MUTATION_ENV = {
 }
 
 STEP_ENVS = {
+    ("release-please", "require-release-token"): {
+        "PERSONAL_ACCESS_TOKEN": "${{ secrets.PERSONAL_ACCESS_TOKEN }}"
+    },
     ("release-please", "target"): {
         "GH_TOKEN": "${{ github.token }}",
         "RELEASE_TAG": "${{ steps.release.outputs.tag_name }}",
@@ -949,7 +959,7 @@ def verify_workflow(workflow: dict[str, Any]) -> None:
         freeze.get("if") == "steps.release.outputs.release_created == 'true'", "freeze gate changed"
     )
     _require(_command(freeze) == FREEZE_COMMAND, "release freeze executable body changed")
-    for step in steps["release-please"][1:]:
+    for step in steps["release-please"][2:]:
         _require(
             step.get("if") == "steps.release.outputs.release_created == 'true'",
             "release identity step condition changed",

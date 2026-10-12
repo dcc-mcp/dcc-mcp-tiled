@@ -37,10 +37,20 @@ jobs:
       release_node_id: ${{ steps.release-identity.outputs.release_node_id }}
       release_assets_sha256: ${{ steps.release-identity.outputs.release_assets_sha256 }}
     steps:
+      - name: Require organization release token
+        id: require-release-token
+        shell: bash
+        env:
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        run: |
+          if [ -z "${PERSONAL_ACCESS_TOKEN:-}" ]; then
+            echo "::error::PERSONAL_ACCESS_TOKEN must be available to create release PRs that trigger CI."
+            exit 1
+          fi
       - id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5 commit
         with:
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Resolve immutable release target
